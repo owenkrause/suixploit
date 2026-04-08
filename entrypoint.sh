@@ -4,7 +4,7 @@ set -euo pipefail
 TARGET_CONTRACT="${TARGET_CONTRACT:?TARGET_CONTRACT env var must be set}"
 
 echo "=== Starting Sui devnet ==="
-sui start --with-faucet --force-regenesis &
+RUST_LOG="off,sui_node=info" sui start --with-faucet --force-regenesis &
 SUI_PID=$!
 
 # Wait for RPC to be ready
@@ -24,48 +24,58 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-# Generate keypairs
+# Wait for faucet to be ready
+echo "Waiting for faucet..."
+for i in $(seq 1 60); do
+  if curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9123 2>/dev/null | grep -q '404\|200\|405'; then
+    echo "Faucet ready after ${i}s"
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "ERROR: Faucet not ready after 60s" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+# Configure client: create local env and switch to it
+echo "Configuring Sui client..."
+sui client new-env --alias local --rpc http://127.0.0.1:9000 -y 2>/dev/null || true
+sui client switch --env local
+
+# Generate keypairs using --json for reliable parsing
 echo "=== Generating accounts ==="
-ADMIN_OUTPUT=$(sui client new-address ed25519 admin 2>&1)
-ADMIN_ADDRESS=$(echo "$ADMIN_OUTPUT" | grep -oP '0x[a-f0-9]{64}' | head -1)
-
-ATTACKER_OUTPUT=$(sui client new-address ed25519 attacker 2>&1)
-ATTACKER_ADDRESS=$(echo "$ATTACKER_OUTPUT" | grep -oP '0x[a-f0-9]{64}' | head -1)
-
-USER_OUTPUT=$(sui client new-address ed25519 user 2>&1)
-USER_ADDRESS=$(echo "$USER_OUTPUT" | grep -oP '0x[a-f0-9]{64}' | head -1)
+ADMIN_ADDRESS=$(sui client new-address ed25519 admin --json | jq -r '.address')
+ATTACKER_ADDRESS=$(sui client new-address ed25519 attacker --json | jq -r '.address')
+USER_ADDRESS=$(sui client new-address ed25519 user --json | jq -r '.address')
 
 echo "Admin:    $ADMIN_ADDRESS"
 echo "Attacker: $ATTACKER_ADDRESS"
 echo "User:     $USER_ADDRESS"
 
-# Fund accounts
+# Fund accounts via CLI faucet command
 echo "=== Funding accounts ==="
 for ADDR in "$ADMIN_ADDRESS" "$ATTACKER_ADDRESS" "$USER_ADDRESS"; do
-  curl -s -X POST http://127.0.0.1:9123/v2/gas \
-    -H 'Content-Type: application/json' \
-    -d "{\"FixedAmountRequest\":{\"recipient\":\"${ADDR}\"}}" \
-    > /dev/null
+  sui client faucet --address "$ADDR" --url http://127.0.0.1:9123/v2/gas 2>/dev/null || true
   echo "Funded $ADDR"
 done
 
-# Publish contract
+# Wait for faucet transactions to finalize
+sleep 3
+
+# Publish contract using test-publish for local/ephemeral networks
 echo "=== Publishing contract: $TARGET_CONTRACT ==="
 sui client switch --address "$ADMIN_ADDRESS" 2>/dev/null
 
-PUBLISH_OUTPUT=$(sui client publish "/workspace/${TARGET_CONTRACT}" \
+PUBLISH_OUTPUT=$(sui client test-publish "/workspace/${TARGET_CONTRACT}" \
   --skip-dependency-verification \
   --gas-budget 500000000 \
-  --json 2>&1)
+  --build-env testnet \
+  --json 2>&1) || true
 
-PACKAGE_ID=$(echo "$PUBLISH_OUTPUT" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for change in data.get('objectChanges', []):
-    if change.get('type') == 'published':
-        print(change['packageId'])
-        break
-" 2>/dev/null || echo "")
+# test-publish --json prefixes build progress lines before the JSON object;
+# strip everything before the first '{' then extract packageId with jq
+PACKAGE_ID=$(echo "$PUBLISH_OUTPUT" | sed -n '/^{/,$p' | jq -r '.objectChanges[] | select(.type == "published") | .packageId')
 
 if [ -z "$PACKAGE_ID" ]; then
   echo "ERROR: Failed to extract package ID from publish output" >&2
@@ -75,10 +85,10 @@ fi
 
 echo "Package ID: $PACKAGE_ID"
 
-# Export private keys
-ADMIN_KEY=$(sui keytool export "$ADMIN_ADDRESS" --json 2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin)['key']['suiPrivateKey'])" 2>/dev/null || echo "")
-ATTACKER_KEY=$(sui keytool export "$ATTACKER_ADDRESS" --json 2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin)['key']['suiPrivateKey'])" 2>/dev/null || echo "")
-USER_KEY=$(sui keytool export "$USER_ADDRESS" --json 2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin)['key']['suiPrivateKey'])" 2>/dev/null || echo "")
+# Export private keys using --json for reliable parsing
+ADMIN_KEY=$(sui keytool export --key-identity admin --json | jq -r '.exportedPrivateKey')
+ATTACKER_KEY=$(sui keytool export --key-identity attacker --json | jq -r '.exportedPrivateKey')
+USER_KEY=$(sui keytool export --key-identity user --json | jq -r '.exportedPrivateKey')
 
 # Write context
 cat > /workspace/context.json <<CONTEXT

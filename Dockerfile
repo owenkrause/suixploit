@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
   curl \
   git \
-  python3 \
+  jq \
   build-essential \
   pkg-config \
   libssl-dev \
@@ -22,7 +22,7 @@ RUN set -eux; \
     *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
   esac; \
   SUI_VERSION=$(curl -s "https://api.github.com/repos/MystenLabs/sui/releases" \
-    | python3 -c "import sys,json; releases=json.load(sys.stdin); print(next(r['tag_name'] for r in releases if r['tag_name'].startswith('devnet-')))"); \
+    | jq -r '[.[] | select(.tag_name | startswith("devnet-"))][0].tag_name'); \
   echo "Installing Sui $SUI_VERSION for $SUI_ARCH"; \
   curl -fsSL "https://github.com/MystenLabs/sui/releases/download/${SUI_VERSION}/sui-${SUI_VERSION}-${SUI_ARCH}.tgz" \
     -o /tmp/sui.tgz; \
