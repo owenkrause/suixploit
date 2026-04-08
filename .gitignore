@@ -4,3 +4,5 @@ dist/
 .sui/
 **/build/
 .DS_Store
+contracts/*
+!contracts/examples/

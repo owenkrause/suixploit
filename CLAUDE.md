@@ -56,17 +56,17 @@ The exploit TS file must export:
 - `src/ranker/` — module scoring
 - `src/validator/` — false positive filtering
 - `src/devnet/` — local devnet lifecycle
-- `contracts/` — intentionally vulnerable test contracts
+- `contracts/examples/` — intentionally vulnerable test contracts
 - `src/cli.ts` — CLI entry point
 - `src/pipeline.ts` — module resolution and pipeline helpers
 
 ## Test Contracts
-- `contracts/easy/capability_leak` — admin cap leaks to any caller
-- `contracts/easy/unchecked_arithmetic` — share inflation via donation attack
-- `contracts/medium/ownership_escape` — missing ownership check on cancel
-- `contracts/medium/flash_loan_misuse` — flash loan repay doesn't verify source
-- `contracts/hard/shared_object_race` — auction settle/bid race condition
-- `contracts/hard/otw_abuse` — unprotected mint on shared treasury cap
+- `contracts/examples/easy/capability_leak` — admin cap leaks to any caller
+- `contracts/examples/easy/unchecked_arithmetic` — share inflation via donation attack
+- `contracts/examples/medium/ownership_escape` — missing ownership check on cancel
+- `contracts/examples/medium/flash_loan_misuse` — flash loan repay doesn't verify source
+- `contracts/examples/hard/shared_object_race` — auction settle/bid race condition
+- `contracts/examples/hard/otw_abuse` — unprotected mint on shared treasury cap
 
 ## Key Dependencies
 - `@anthropic-ai/sdk` — Anthropic API client (agent conversations)
