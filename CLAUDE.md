@@ -2,50 +2,36 @@
 
 This project is a multi-agent pipeline for finding vulnerabilities in Sui Move contracts. You are the orchestrator.
 
-## Quick Start
+## Automated Pipeline
 
-To scan a contract:
-1. Run `npx tsx src/cli.ts scan <path-to-move-project>` to resolve modules
-2. Follow the pipeline steps below
-
-## Pipeline
-
-### Step 1: Resolve Modules
+Run a full scan:
 ```bash
-npx tsx src/cli.ts scan <target-path>
+ANTHROPIC_API_KEY=<key> npx suixploit scan <target> [options]
 ```
-This outputs the modules found and generates prompts.
 
-### Step 2: Ranker (skip if <=3 modules)
-Feed all module sources to the ranker prompt. Score each 1-5. Only hunt modules scoring 4-5.
+Options:
+- `--concurrency <n>` — Max parallel agents (default: 5)
+- `--model <model>` — Model for agents (default: claude-sonnet-4-6)
+- `--max-turns <n>` — Max turns per hunter (default: 50)
+- `--output <path>` — Write results to file (default: stdout)
+- `--keep-containers` — Keep Docker containers for debugging
 
-### Step 3: Start Devnets
-For each module to hunt, start an isolated devnet:
+Example:
 ```bash
-# The devnet lifecycle module handles this, but manually:
-sui start --with-faucet --force-regenesis --fullnode-rpc-port <port> --faucet-port <port+23>
+ANTHROPIC_API_KEY=sk-ant-... npx suixploit scan contracts/easy/capability_leak --concurrency 1 --output results.json
 ```
-Each hunter gets a unique port starting at 9100 (increment by 100).
 
-### Step 4: Seed State
-For each devnet, deploy the target contract and fund test accounts.
-The seed module (`src/devnet/seed.ts`) handles this.
+Requires: Docker running, ANTHROPIC_API_KEY set.
 
-### Step 5: Spawn Hunters
-For each high-priority module, spawn a Claude Code Agent with `isolation: "worktree"`:
-- Pass the hunter prompt from `src/hunter/prompt.ts`
-- The agent gets shell access to its own devnet
-- The agent uses `npx tsx src/oracle/check.ts` to verify exploits
-- The agent writes findings to `findings.json` in its worktree
-
-### Step 6: Collect Findings
-After all hunters complete, read `findings.json` from each worktree.
-
-### Step 7: Validate
-Feed all findings + source to the validator prompt. Filter false positives.
-
-### Step 8: Output
-Write final `ScanResult` as JSON.
+The pipeline automatically:
+1. Resolves Move modules from the target path
+2. Ranks modules by attack surface (skipped if <= 3 modules)
+3. Builds a Docker image with Sui CLI + Node
+4. Spawns one container per module (devnet + contract deployed + accounts funded)
+5. Runs parallel hunter agents via Anthropic API
+6. Collects and validates findings
+7. Outputs a ScanResult JSON
+8. Cleans up all containers
 
 ## Oracle Usage (for hunter agents)
 ```bash
@@ -64,6 +50,7 @@ The exploit TS file must export:
 - `attackerKeypair` — Ed25519Keypair for the attacker
 
 ## Project Structure
+- `src/orchestrator/` — Docker management, agent loop, concurrency, cleanup
 - `src/oracle/` — deterministic exploit confirmation (no LLM)
 - `src/hunter/` — agent prompt templates
 - `src/ranker/` — module scoring
@@ -71,7 +58,7 @@ The exploit TS file must export:
 - `src/devnet/` — local devnet lifecycle
 - `contracts/` — intentionally vulnerable test contracts
 - `src/cli.ts` — CLI entry point
-- `src/pipeline.ts` — pipeline orchestration helpers
+- `src/pipeline.ts` — module resolution and pipeline helpers
 
 ## Test Contracts
 - `contracts/easy/capability_leak` — admin cap leaks to any caller
@@ -82,6 +69,7 @@ The exploit TS file must export:
 - `contracts/hard/otw_abuse` — unprotected mint on shared treasury cap
 
 ## Key Dependencies
+- `@anthropic-ai/sdk` — Anthropic API client (agent conversations)
 - `@mysten/sui` — Sui TypeScript SDK
 - `commander` — CLI framework
 - `vitest` — test runner
