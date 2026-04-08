@@ -1,10 +1,9 @@
 import { parseArgs } from "node:util";
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { getFullnodeUrl, SuiClient } from "@mysten/sui/client";
+import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { checkAbort } from "./abort.js";
-import { checkBalance } from "./balance.js";
+import { checkBalance, type BalanceChange } from "./balance.js";
 import { checkOwnership } from "./ownership.js";
 import type { OracleResult } from "../types.js";
 
@@ -28,20 +27,23 @@ if (!values.signal || !values.tx || !values.attacker) {
   process.exit(1);
 }
 
-const client = new SuiClient({ url: values["rpc-url"]! });
+const client = new SuiJsonRpcClient({
+  url: values["rpc-url"]!,
+  network: "localnet",
+});
 
 // Dynamically import the exploit transaction module
 const txModulePath = resolve(process.cwd(), values.tx!);
 const txModule = await import(txModulePath);
 
 if (typeof txModule.buildTx !== "function") {
-  console.error(`Error: ${values.tx} must export a buildTx(client: SuiClient, attackerAddress: string) function`);
+  console.error(`Error: ${values.tx} must export a buildTx(client, attackerAddress: string) function`);
   process.exit(1);
 }
 
 const txBlock = await txModule.buildTx(client, values.attacker!);
 
-// Dry run the transaction
+// Simulate the transaction via dry run
 const attackerKeypair = txModule.attackerKeypair as Ed25519Keypair | undefined;
 if (!attackerKeypair) {
   console.error(`Error: ${values.tx} must export an attackerKeypair (Ed25519Keypair)`);
@@ -52,7 +54,7 @@ const dryRunResult = await client.dryRunTransactionBlock({
   transactionBlock: await txBlock.build({ client }),
 });
 
-let result: OracleResult;
+let result!: OracleResult;
 
 switch (values.signal) {
   case "abort":
@@ -63,18 +65,17 @@ switch (values.signal) {
     break;
 
   case "balance":
-    result = checkBalance(values.attacker!, dryRunResult.balanceChanges);
+    result = checkBalance(values.attacker!, dryRunResult.balanceChanges as BalanceChange[]);
     break;
 
   case "ownership":
     result = checkOwnership(
       values.attacker!,
-      dryRunResult.objectChanges.map((c) => ({
-        ...c,
-        type: c.type as "created" | "mutated" | "deleted" | "wrapped" | "published",
-        objectId: "objectId" in c ? (c as Record<string, string>).objectId : "",
-        owner: "owner" in c ? (c as Record<string, unknown>).owner as Record<string, unknown> : undefined,
-        sender: ("sender" in c ? (c as Record<string, string>).sender : values.attacker!) as string,
+      (dryRunResult.objectChanges ?? []).map((c: Record<string, unknown>) => ({
+        type: (c.type as string) as "created" | "mutated" | "deleted" | "wrapped" | "published",
+        objectId: (c.objectId as string) ?? "",
+        owner: c.owner as Record<string, unknown> | undefined,
+        sender: (c.sender as string) ?? values.attacker!,
       }))
     );
     break;
