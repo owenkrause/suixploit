@@ -1,14 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { readFileSync } from "node:fs";
 import type { Finding, ModuleInfo, ValidatedFinding } from "../types.js";
 import { buildValidatorAgentPrompt, buildOtherFindingsSummary } from "./prompt.js";
 import { runAgent } from "../orchestrator/agent.js";
-import { readVerdict } from "../orchestrator/docker.js";
+import type { ExecFn } from "../orchestrator/agent.js";
 import { Semaphore } from "../orchestrator/semaphore.js";
 
 export interface ValidatorOptions {
   client: Anthropic;
   findings: Finding[];
-  containerIds: string[];
+  exec: ExecFn;
   model: string;
   concurrency: number;
   maxTurns?: number;
@@ -24,20 +25,17 @@ interface ValidatorVerdict {
 }
 
 export async function runValidators(options: ValidatorOptions): Promise<ValidatedFinding[]> {
-  const { client, findings, containerIds, model, concurrency, maxTurns = 30 } = options;
+  const { client, findings, exec, model, concurrency, maxTurns = 30 } = options;
 
   if (findings.length === 0) return [];
 
   const sem = new Semaphore(concurrency);
 
-  // Use the first available container for all validators (they just read files)
-  const containerId = containerIds[0];
-
   const verdicts = await Promise.all(
     findings.map(async (finding) => {
       const release = await sem.acquire();
       try {
-        return await runValidatorForFinding(client, finding, findings, containerId, model, maxTurns);
+        return await runValidatorForFinding(client, finding, findings, exec, model, maxTurns);
       } finally {
         release();
       }
@@ -51,7 +49,7 @@ async function runValidatorForFinding(
   client: Anthropic,
   finding: Finding,
   allFindings: Finding[],
-  containerId: string,
+  exec: ExecFn,
   model: string,
   maxTurns: number
 ): Promise<ValidatorVerdict> {
@@ -62,15 +60,15 @@ async function runValidatorForFinding(
 
 ## Environment
 
-You have a \`bash\` tool to run shell commands. Source code is at /workspace.
+You have a \`bash\` tool to run shell commands. Source code is in the current directory.
 Use it to read .move files, grep for functions, trace code paths.
 
-When you are done, write your verdict to /workspace/verdict-${finding.id}.json`;
+When you are done, write your verdict to verdict-${finding.id}.json in the current directory.`;
 
   console.error(`[validator:${finding.id}] Starting review...`);
 
   const result = await runAgent(client, {
-    containerId,
+    exec,
     systemPrompt,
     model,
     maxTurns,
@@ -79,10 +77,10 @@ When you are done, write your verdict to /workspace/verdict-${finding.id}.json`;
 
   console.error(`[validator:${finding.id}] Finished: ${result.stopped} after ${result.turns} turns (${result.inputTokens + result.outputTokens} tokens)`);
 
-  // Read verdict
-  const verdictJson = await readVerdict(containerId, finding.id);
+  // Read verdict from local file
   try {
-    return JSON.parse(verdictJson) as ValidatorVerdict;
+    const { stdout } = await exec(`cat verdict-${finding.id}.json`);
+    return JSON.parse(stdout) as ValidatorVerdict;
   } catch {
     console.error(`[validator:${finding.id}] Failed to parse verdict, defaulting to confirmed`);
     return {

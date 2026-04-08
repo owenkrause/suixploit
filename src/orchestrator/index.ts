@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { resolve } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import type { ModuleInfo, Finding, ValidatedFinding, ScanResult } from "../types.js";
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "../ranker/index.js";
@@ -8,6 +8,8 @@ import { runValidators, filterConfirmed, deduplicateFindings } from "../validato
 import { prepareHunterPrompt } from "../hunter/index.js";
 import { buildImage, startContainer, waitForReady, readContextJson, readFindings } from "./docker.js";
 import { buildSystemPrompt, buildMainnetSystemPrompt, runAgent } from "./agent.js";
+import type { ExecFn } from "./agent.js";
+import { makeDockerExec, makeLocalExec } from "./exec.js";
 import { Semaphore } from "./semaphore.js";
 import { ResourceTracker } from "./tracker.js";
 
@@ -82,45 +84,66 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     console.error(`Ranker selected ${ctx.hunterTargets.length} module(s) for hunting.`);
   }
 
-  // Step 3: Build Docker image
-  const projectRoot = resolve(import.meta.dirname, "../..");
-  await buildImage(resolve(projectRoot, "Dockerfile"), projectRoot);
-
-  // Step 4: Spawn containers and run hunters
-  console.error(`Spawning ${ctx.hunterTargets.length} hunter(s) (concurrency: ${concurrency})...`);
+  // Step 3-5: Hunt (strategy depends on network mode)
   const sem = new Semaphore(concurrency);
   const allFindings: Finding[] = [];
 
-  const hunterResults = await Promise.all(
-    ctx.hunterTargets.map(async (mod) => {
-      const release = await sem.acquire();
-      try {
-        const result = await runHunterForModule(client, tracker, mod, target, model, maxTurns, network, packageId);
-        // Checkpoint each hunter's findings as they complete
-        if (result.findings.length > 0) {
-          checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, result.findings);
-          allFindings.push(...result.findings);
-          checkpoint("all-findings.json", allFindings);
-        }
-        return result;
-      } finally {
-        release();
-      }
-    })
-  );
+  if (network === "mainnet") {
+    // Mainnet: no Docker, run agents locally
+    console.error(`Running ${ctx.hunterTargets.length} hunter(s) locally (concurrency: ${concurrency})...`);
 
-  // Step 5: Collect findings and container IDs
-  ctx.rawFindings = hunterResults.flatMap((r) => r.findings);
-  const containerIds = hunterResults.map((r) => r.containerId);
+    const workDir = resolve(target);
+    await Promise.all(
+      ctx.hunterTargets.map(async (mod) => {
+        const release = await sem.acquire();
+        try {
+          const findings = await runMainnetHunter(client, mod, workDir, model, maxTurns, packageId!);
+          if (findings.length > 0) {
+            checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, findings);
+            allFindings.push(...findings);
+            checkpoint("all-findings.json", allFindings);
+          }
+        } finally {
+          release();
+        }
+      })
+    );
+    ctx.rawFindings = allFindings;
+  } else {
+    // Devnet: Docker containers
+    console.error("Building Docker image...");
+    const projectRoot = resolve(import.meta.dirname, "../..");
+    await buildImage(resolve(projectRoot, "Dockerfile"), projectRoot);
+
+    console.error(`Spawning ${ctx.hunterTargets.length} hunter(s) in Docker (concurrency: ${concurrency})...`);
+    const hunterResults = await Promise.all(
+      ctx.hunterTargets.map(async (mod) => {
+        const release = await sem.acquire();
+        try {
+          const result = await runDevnetHunter(client, tracker, mod, target, model, maxTurns);
+          if (result.findings.length > 0) {
+            checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, result.findings);
+            allFindings.push(...result.findings);
+            checkpoint("all-findings.json", allFindings);
+          }
+          return result;
+        } finally {
+          release();
+        }
+      })
+    );
+    ctx.rawFindings = hunterResults.flatMap((r) => r.findings);
+  }
+
   console.error(`Collected ${ctx.rawFindings.length} raw finding(s).`);
 
-  // Step 6: Validate (parallel agents reusing hunter containers)
-  if (ctx.rawFindings.length > 0 && containerIds.length > 0) {
+  // Step 6: Validate (always local — just reads source files and reasons)
+  if (ctx.rawFindings.length > 0) {
     console.error(`Running ${ctx.rawFindings.length} validator agent(s) (concurrency: ${concurrency})...`);
     const validated = await runValidators({
       client,
       findings: ctx.rawFindings,
-      containerIds,
+      exec: makeLocalExec(resolve(target)),
       model,
       concurrency,
     });
@@ -133,7 +156,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     console.error("No findings to validate.");
   }
 
-  // Step 7: Cleanup
+  // Step 7: Cleanup (only relevant for devnet containers)
   if (!keepContainers) {
     await tracker.killAll();
   }
@@ -141,59 +164,21 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   return buildScanResult(ctx);
 }
 
-async function runHunterForModule(
+async function runMainnetHunter(
   client: Anthropic,
-  tracker: ResourceTracker,
   mod: ModuleInfo,
-  target: string,
+  workDir: string,
   model: string,
-  maxTurns?: number,
-  network: "devnet" | "mainnet" = "devnet",
-  packageId?: string
-): Promise<{ findings: Finding[]; containerId: string }> {
-  console.error(`[${mod.name}] Starting container (${network})...`);
+  maxTurns: number | undefined,
+  packageId: string
+): Promise<Finding[]> {
+  const rpcUrl = "https://fullnode.mainnet.sui.io:443";
+  const hunterPrompt = buildMainnetHunterPrompt(mod, packageId, rpcUrl);
+  const systemPrompt = buildMainnetSystemPrompt(hunterPrompt, { rpcUrl, packageId });
 
-  const containerId = await startContainer({
-    targetContract: target,
-    network,
-    packageId,
-  });
-  tracker.add(containerId);
-
-  console.error(`[${mod.name}] Container ${containerId.slice(0, 12)} — waiting for ready...`);
-  await waitForReady(containerId);
-
-  const context = await readContextJson(containerId);
-
-  let hunterPrompt: string;
-  let systemPrompt: string;
-
-  if (network === "mainnet") {
-    hunterPrompt = buildMainnetHunterPrompt(mod, context.packageId, context.rpcUrl);
-    systemPrompt = buildMainnetSystemPrompt(hunterPrompt, context);
-  } else {
-    hunterPrompt = prepareHunterPrompt({
-      module: mod,
-      devnetConfig: {
-        rpcUrl: context.rpcUrl,
-        faucetUrl: context.faucetUrl,
-        port: 9000,
-        faucetPort: 9123,
-        adminAddress: context.adminAddress,
-        attackerAddress: context.attackerAddress,
-        userAddress: context.userAddress,
-        adminKeyPair: context.adminKeyPair ?? "",
-        attackerKeyPair: context.attackerKeyPair ?? "",
-        userKeyPair: context.userKeyPair ?? "",
-      },
-      packageId: context.packageId,
-    });
-    systemPrompt = buildSystemPrompt(hunterPrompt, context);
-  }
-
-  console.error(`[${mod.name}] Running agent (model: ${model}${maxTurns ? `, max turns: ${maxTurns}` : ''})...`);
+  console.error(`[${mod.name}] Running locally (mainnet dry-run)...`);
   const result = await runAgent(client, {
-    containerId,
+    exec: makeLocalExec(workDir),
     systemPrompt,
     model,
     maxTurns,
@@ -202,12 +187,68 @@ async function runHunterForModule(
 
   console.error(`[${mod.name}] Agent finished: ${result.stopped} after ${result.turns} turns (${result.inputTokens + result.outputTokens} tokens)`);
 
-  // Collect findings
+  try {
+    const findingsJson = readFileSync(resolve(workDir, "findings.json"), "utf-8");
+    return JSON.parse(findingsJson) as Finding[];
+  } catch {
+    return [];
+  }
+}
+
+async function runDevnetHunter(
+  client: Anthropic,
+  tracker: ResourceTracker,
+  mod: ModuleInfo,
+  target: string,
+  model: string,
+  maxTurns?: number
+): Promise<{ findings: Finding[] }> {
+  console.error(`[${mod.name}] Starting container (devnet)...`);
+
+  const containerId = await startContainer({
+    targetContract: target,
+    network: "devnet",
+  });
+  tracker.add(containerId);
+
+  console.error(`[${mod.name}] Container ${containerId.slice(0, 12)} — waiting for ready...`);
+  await waitForReady(containerId);
+
+  const context = await readContextJson(containerId);
+  const hunterPrompt = prepareHunterPrompt({
+    module: mod,
+    devnetConfig: {
+      rpcUrl: context.rpcUrl,
+      faucetUrl: context.faucetUrl,
+      port: 9000,
+      faucetPort: 9123,
+      adminAddress: context.adminAddress,
+      attackerAddress: context.attackerAddress,
+      userAddress: context.userAddress,
+      adminKeyPair: context.adminKeyPair ?? "",
+      attackerKeyPair: context.attackerKeyPair ?? "",
+      userKeyPair: context.userKeyPair ?? "",
+    },
+    packageId: context.packageId,
+  });
+  const systemPrompt = buildSystemPrompt(hunterPrompt, context);
+
+  console.error(`[${mod.name}] Running agent (model: ${model}${maxTurns ? `, max turns: ${maxTurns}` : ''})...`);
+  const result = await runAgent(client, {
+    exec: makeDockerExec(containerId),
+    systemPrompt,
+    model,
+    maxTurns,
+    moduleName: mod.name,
+  });
+
+  console.error(`[${mod.name}] Agent finished: ${result.stopped} after ${result.turns} turns (${result.inputTokens + result.outputTokens} tokens)`);
+
   const findingsJson = await readFindings(containerId);
   try {
-    return { findings: JSON.parse(findingsJson) as Finding[], containerId };
+    return { findings: JSON.parse(findingsJson) as Finding[] };
   } catch {
-    return { findings: [], containerId };
+    return { findings: [] };
   }
 }
 
@@ -277,7 +318,7 @@ Save exploit scripts as .ts files and run with \`npx tsx <file>\`.
 3. Craft exploit transactions and dry-run them to prove they work
 4. A successful dry-run with status "success" that violates an invariant = confirmed vulnerability
 
-When done, write findings to /workspace/findings.json:
+When done, write findings to findings.json:
 \`\`\`json
 [{
   "id": "unique-id",

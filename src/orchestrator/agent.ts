@@ -1,8 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { dockerExec } from "./docker.js";
+
+export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
 export interface AgentOptions {
-  containerId: string;
+  exec: ExecFn;
   systemPrompt: string;
   model: string;
   maxTurns?: number;
@@ -72,18 +73,18 @@ You are analyzing a live contract on Sui mainnet. All transactions are simulated
 - RPC URL: ${context.rpcUrl}
 - Package ID: ${context.packageId}
 
-You have a \`bash\` tool to run shell commands. The project source is at /workspace.
+You have a \`bash\` tool to run shell commands. The project source is in the current directory.
 The @mysten/sui TypeScript SDK and Sui CLI are available.
 Use \`npx tsx\` to run TypeScript files.
 
-When you are done, write your findings to /workspace/findings.json.`;
+When you are done, write your findings to findings.json in the current directory.`;
 }
 
 export async function runAgent(
   client: Anthropic,
   options: AgentOptions
 ): Promise<AgentResult> {
-  const { containerId, systemPrompt, model, maxTurns, moduleName } = options;
+  const { exec, systemPrompt, model, maxTurns, moduleName } = options;
   const tool = buildToolDefinition();
 
   let messages: Anthropic.MessageParam[] = [
@@ -147,7 +148,7 @@ export async function runAgent(
         const input = block.input as { command: string };
         console.error(`[${moduleName}] $ ${input.command.slice(0, 100)}`);
 
-        const result = await dockerExec(containerId, input.command);
+        const result = await exec(input.command);
         const output = [result.stdout, result.stderr]
           .filter(Boolean)
           .join("\n")

@@ -14,19 +14,22 @@ program
   .command("scan")
   .description("Scan a Move project for vulnerabilities")
   .argument("<target>", "Path to Move project directory")
+  .option("--package-id <id>", "On-chain package ID (required for mainnet)")
   .option("--concurrency <n>", "Max parallel agents", "5")
-  .option("--model <model>", "Model for agents", "claude-sonnet-4-6")
+  .option("--model <model>", "Model for agents", "claude-opus-4-6")
   .option("--max-turns <n>", "Max turns per hunter agent (default: unlimited)")
   .option("--output <path>", "Write ScanResult JSON to file (default: stdout)")
   .option("--keep-containers", "Don't remove containers after run", false)
-  .option("--network <network>", "Network mode: devnet or mainnet", "devnet")
-  .option("--package-id <id>", "On-chain package ID (required for mainnet)")
-  .option("--checkpoint-dir <path>", "Directory for checkpoint files (default: <target>/.suixploit)")
+  .option("--network <network>", "Network mode: devnet or mainnet", "mainnet")
+  .option(
+    "--checkpoint-dir <path>",
+    "Directory for checkpoint files (default: <target>/.suixploit)",
+  )
   .option("--protocol <description>", "Protocol description override")
   .option("--invariants <invariants...>", "Invariants to test against")
   .action(async (target: string, options) => {
     if (options.network === "mainnet" && !options.packageId) {
-      console.error("Error: --package-id is required when --network is mainnet");
+      console.error("Error: --package-id is required for mainnet mode");
       process.exit(1);
     }
 

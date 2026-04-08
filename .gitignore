@@ -7,3 +7,5 @@ dist/
 contracts/*
 !contracts/examples/
 .suixploit/
+findings.json
+verdict-*.json
