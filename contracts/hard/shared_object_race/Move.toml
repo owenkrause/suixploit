@@ -1,0 +1,9 @@
+[package]
+name = "shared_object_race"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
+
+[addresses]
+shared_object_race = "0x0"

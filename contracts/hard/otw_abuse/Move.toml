@@ -1,0 +1,9 @@
+[package]
+name = "otw_abuse"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
+
+[addresses]
+otw_abuse = "0x0"
