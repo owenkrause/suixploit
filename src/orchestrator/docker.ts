@@ -94,3 +94,14 @@ export async function readFindings(containerId: string): Promise<string> {
     return "[]";
   }
 }
+
+export async function readVerdict(containerId: string, findingId: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("docker", [
+      "exec", containerId, "cat", `/workspace/verdict-${findingId}.json`,
+    ]);
+    return stdout;
+  } catch {
+    return "{}";
+  }
+}
