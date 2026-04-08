@@ -11,24 +11,36 @@ import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "./ra
 import { prepareHunterPrompt } from "./hunter/index.js";
 
 export async function resolveModules(targetPath: string): Promise<ModuleInfo[]> {
-  const sourcesDir = resolve(targetPath, "sources");
+  // Recursively find all .move files inside any sources/ directory, skipping tests/ and build/
+  const SKIP_DIRS = new Set(["tests", "build", "node_modules", ".suixploit"]);
 
-  // Recursively collect all .move files under sources/
-  async function collectMoveFiles(dir: string): Promise<string[]> {
-    const entries = await readdir(dir, { withFileTypes: true });
+  async function findSourceMoveFiles(dir: string, inSources: boolean): Promise<string[]> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
     const paths: string[] = [];
     for (const entry of entries) {
+      if (SKIP_DIRS.has(entry.name)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        paths.push(...await collectMoveFiles(full));
-      } else if (entry.name.endsWith(".move")) {
+        const nowInSources = inSources || entry.name === "sources";
+        paths.push(...await findSourceMoveFiles(full, nowInSources));
+      } else if (inSources && entry.name.endsWith(".move")) {
         paths.push(full);
       }
     }
     return paths;
   }
 
-  const moveFiles = await collectMoveFiles(sourcesDir);
+  let moveFiles = await findSourceMoveFiles(resolve(targetPath), false);
+
+  if (moveFiles.length === 0) {
+    // Fallback: maybe targetPath itself is a sources/ dir
+    moveFiles = await findSourceMoveFiles(resolve(targetPath), true);
+  }
 
   // Try to read protocol.md once for all modules
   let protocolDescription: string | undefined;
