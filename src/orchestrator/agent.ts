@@ -5,7 +5,7 @@ export interface AgentOptions {
   containerId: string;
   systemPrompt: string;
   model: string;
-  maxTurns: number;
+  maxTurns?: number;
   moduleName: string;
 }
 
@@ -59,6 +59,26 @@ Working directory is /workspace. Write your exploit files there.
 When you are done, write your findings to /workspace/findings.json.`;
 }
 
+export function buildMainnetSystemPrompt(
+  hunterPrompt: string,
+  context: Record<string, string>
+): string {
+  return `${hunterPrompt}
+
+## Environment (mainnet dry-run — read-only, nothing executes on-chain)
+
+You are analyzing a live contract on Sui mainnet. All transactions are simulated via dry-run.
+
+- RPC URL: ${context.rpcUrl}
+- Package ID: ${context.packageId}
+
+You have a \`bash\` tool to run shell commands. The project source is at /workspace.
+The @mysten/sui TypeScript SDK and Sui CLI are available.
+Use \`npx tsx\` to run TypeScript files.
+
+When you are done, write your findings to /workspace/findings.json.`;
+}
+
 export async function runAgent(
   client: Anthropic,
   options: AgentOptions
@@ -78,7 +98,7 @@ export async function runAgent(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  while (turns < maxTurns) {
+  while (!maxTurns || turns < maxTurns) {
     turns++;
 
     let response: Anthropic.Message;
