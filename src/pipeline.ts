@@ -8,7 +8,6 @@ import type {
   ScanResult,
 } from "./types.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "./ranker/index.js";
-import { buildValidatorPrompt, parseValidatorResponse, filterConfirmed } from "./validator/index.js";
 import { prepareHunterPrompt } from "./hunter/index.js";
 
 export async function resolveModules(targetPath: string): Promise<ModuleInfo[]> {

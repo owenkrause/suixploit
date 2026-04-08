@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import type { ModuleInfo, Finding, ValidatedFinding, ScanResult } from "../types.js";
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "../ranker/index.js";
-import { buildValidatorPrompt, parseValidatorResponse, filterConfirmed } from "../validator/index.js";
+import { runValidators, filterConfirmed, deduplicateFindings } from "../validator/index.js";
 import { prepareHunterPrompt } from "../hunter/index.js";
 import { buildImage, startContainer, waitForReady, readContextJson, readFindings } from "./docker.js";
 import { buildSystemPrompt, buildMainnetSystemPrompt, runAgent } from "./agent.js";
@@ -90,25 +90,23 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     })
   );
 
-  // Step 5: Collect findings
-  ctx.rawFindings = hunterResults.flat();
+  // Step 5: Collect findings and container IDs
+  ctx.rawFindings = hunterResults.flatMap((r) => r.findings);
+  const containerIds = hunterResults.map((r) => r.containerId);
   console.error(`Collected ${ctx.rawFindings.length} raw finding(s).`);
 
-  // Step 6: Validate (if any findings)
-  if (ctx.rawFindings.length > 0) {
-    console.error("Running validator...");
-    const validatorPrompt = buildValidatorPrompt(ctx.rawFindings, modules);
-    const validatorResponse = await client.messages.create({
+  // Step 6: Validate (parallel agents reusing hunter containers)
+  if (ctx.rawFindings.length > 0 && containerIds.length > 0) {
+    console.error(`Running ${ctx.rawFindings.length} validator agent(s) (concurrency: ${concurrency})...`);
+    const validated = await runValidators({
+      client,
+      findings: ctx.rawFindings,
+      containerIds,
       model,
-      max_tokens: 8192,
-      messages: [{ role: "user", content: validatorPrompt }],
+      concurrency,
     });
-    const validatorText = validatorResponse.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    ctx.findings = filterConfirmed(parseValidatorResponse(validatorText));
-    console.error(`Validator confirmed ${ctx.findings.length} finding(s).`);
+    ctx.findings = deduplicateFindings(filterConfirmed(validated));
+    console.error(`Validator confirmed ${ctx.findings.length} finding(s) after dedup.`);
   } else {
     ctx.findings = [];
     console.error("No findings to validate.");
@@ -131,7 +129,7 @@ async function runHunterForModule(
   maxTurns?: number,
   network: "devnet" | "mainnet" = "devnet",
   packageId?: string
-): Promise<Finding[]> {
+): Promise<{ findings: Finding[]; containerId: string }> {
   console.error(`[${mod.name}] Starting container (${network})...`);
 
   const containerId = await startContainer({
@@ -186,9 +184,9 @@ async function runHunterForModule(
   // Collect findings
   const findingsJson = await readFindings(containerId);
   try {
-    return JSON.parse(findingsJson) as Finding[];
+    return { findings: JSON.parse(findingsJson) as Finding[], containerId };
   } catch {
-    return [];
+    return { findings: [], containerId };
   }
 }
 
