@@ -1,0 +1,9 @@
+[package]
+name = "flash_loan_misuse"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
+
+[addresses]
+flash_loan_misuse = "0x0"
