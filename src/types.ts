@@ -41,6 +41,8 @@ export interface ValidatedFinding extends Finding {
   validatorVerdict: "confirmed" | "adjusted" | "rejected";
   validatorNote: string;
   adjustedSeverity?: Severity;
+  impact?: string;
+  duplicateOf?: string;
 }
 
 export interface ScanResult {
