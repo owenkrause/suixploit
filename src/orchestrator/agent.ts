@@ -161,7 +161,21 @@ export async function runAgent(
       })
     );
 
-    messages.push({ role: "user", content: toolResults });
+    // Warn agent on second-to-last turn to flush output
+    if (maxTurns && turns === maxTurns - 1) {
+      messages.push({
+        role: "user",
+        content: [
+          ...toolResults,
+          {
+            type: "text" as const,
+            text: `WARNING: You are about to hit your turn limit. This is your LAST turn. Write your output file NOW with whatever analysis you have so far. Note that you hit the turn limit.`,
+          },
+        ],
+      });
+    } else {
+      messages.push({ role: "user", content: toolResults });
+    }
   }
 
   return {
