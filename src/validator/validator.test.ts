@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { buildValidatorPrompt, parseValidatorResponse } from "./index.js";
-import type { Finding, ModuleInfo } from "../types.js";
+import { filterConfirmed, deduplicateFindings } from "./index.js";
+import { buildValidatorAgentPrompt, buildOtherFindingsSummary } from "./prompt.js";
+import type { Finding, ValidatedFinding } from "../types.js";
 
 const sampleFinding: Finding = {
   id: "f1",
@@ -19,41 +20,70 @@ const sampleFinding: Finding = {
   iterations: 2,
 };
 
-describe("buildValidatorPrompt", () => {
-  it("includes findings and source code", () => {
-    const prompt = buildValidatorPrompt(
-      [sampleFinding],
-      [{ name: "test::vault", source: "module code", path: "/p" }]
-    );
+const sampleFinding2: Finding = {
+  ...sampleFinding,
+  id: "f2",
+  title: "Duplicate of AdminCap leak",
+};
+
+describe("buildValidatorAgentPrompt", () => {
+  it("includes finding details", () => {
+    const prompt = buildValidatorAgentPrompt(sampleFinding, "No other findings.");
     expect(prompt).toContain("AdminCap leak");
-    expect(prompt).toContain("module code");
+    expect(prompt).toContain("test::vault");
+    expect(prompt).toContain("EXPLOIT_CONFIRMED");
+    expect(prompt).toContain("verdict-f1.json");
   });
 });
 
-describe("parseValidatorResponse", () => {
-  it("parses validated findings with verdict", () => {
-    const response = JSON.stringify([
-      {
-        ...sampleFinding,
-        validatorVerdict: "confirmed",
-        validatorNote: "Verified — real vulnerability",
-      },
-    ]);
-    const validated = parseValidatorResponse(response);
-    expect(validated).toHaveLength(1);
-    expect(validated[0].validatorVerdict).toBe("confirmed");
+describe("buildOtherFindingsSummary", () => {
+  it("lists other findings excluding current", () => {
+    const summary = buildOtherFindingsSummary([sampleFinding, sampleFinding2], "f1");
+    expect(summary).toContain("f2");
+    expect(summary).not.toContain("f1:");
   });
 
-  it("handles adjusted severity", () => {
-    const response = JSON.stringify([
-      {
-        ...sampleFinding,
-        validatorVerdict: "adjusted",
-        validatorNote: "Not critical, downgraded",
-        adjustedSeverity: "medium",
-      },
-    ]);
-    const validated = parseValidatorResponse(response);
-    expect(validated[0].adjustedSeverity).toBe("medium");
+  it("returns message when no other findings", () => {
+    const summary = buildOtherFindingsSummary([sampleFinding], "f1");
+    expect(summary).toContain("No other findings");
+  });
+});
+
+describe("filterConfirmed", () => {
+  it("removes rejected findings", () => {
+    const findings: ValidatedFinding[] = [
+      { ...sampleFinding, validatorVerdict: "confirmed", validatorNote: "good" },
+      { ...sampleFinding2, validatorVerdict: "rejected", validatorNote: "false positive" },
+    ];
+    const result = filterConfirmed(findings);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("f1");
+  });
+
+  it("keeps adjusted findings", () => {
+    const findings: ValidatedFinding[] = [
+      { ...sampleFinding, validatorVerdict: "adjusted", validatorNote: "downgraded", adjustedSeverity: "low" },
+    ];
+    expect(filterConfirmed(findings)).toHaveLength(1);
+  });
+});
+
+describe("deduplicateFindings", () => {
+  it("removes findings marked as duplicates", () => {
+    const findings: ValidatedFinding[] = [
+      { ...sampleFinding, validatorVerdict: "confirmed", validatorNote: "original" },
+      { ...sampleFinding2, validatorVerdict: "confirmed", validatorNote: "dupe", duplicateOf: "f1" },
+    ];
+    const result = deduplicateFindings(findings);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("f1");
+  });
+
+  it("keeps all findings when no duplicates", () => {
+    const findings: ValidatedFinding[] = [
+      { ...sampleFinding, validatorVerdict: "confirmed", validatorNote: "good" },
+      { ...sampleFinding2, validatorVerdict: "confirmed", validatorNote: "also good" },
+    ];
+    expect(deduplicateFindings(findings)).toHaveLength(2);
   });
 });
