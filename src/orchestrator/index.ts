@@ -146,6 +146,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       exec: makeLocalExec(resolve(target)),
       model,
       concurrency,
+      checkpointDir,
     });
     const confirmed = filterConfirmed(validated);
     ctx.findings = await deduplicateFindings(client, confirmed, model);

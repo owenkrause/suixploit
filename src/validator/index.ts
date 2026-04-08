@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { readFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Finding, ModuleInfo, ValidatedFinding } from "../types.js";
 import { buildValidatorAgentPrompt, buildOtherFindingsSummary } from "./prompt.js";
 import { runAgent } from "../orchestrator/agent.js";
@@ -13,6 +14,7 @@ export interface ValidatorOptions {
   model: string;
   concurrency: number;
   maxTurns?: number;
+  checkpointDir?: string;
 }
 
 interface ValidatorVerdict {
@@ -25,7 +27,7 @@ interface ValidatorVerdict {
 }
 
 export async function runValidators(options: ValidatorOptions): Promise<ValidatedFinding[]> {
-  const { client, findings, exec, model, concurrency, maxTurns = 30 } = options;
+  const { client, findings, exec, model, concurrency, maxTurns = 30, checkpointDir } = options;
 
   if (findings.length === 0) return [];
 
@@ -35,7 +37,13 @@ export async function runValidators(options: ValidatorOptions): Promise<Validate
     findings.map(async (finding) => {
       const release = await sem.acquire();
       try {
-        return await runValidatorForFinding(client, finding, findings, exec, model, maxTurns);
+        const verdict = await runValidatorForFinding(client, finding, findings, exec, model, maxTurns);
+        if (checkpointDir) {
+          const path = resolve(checkpointDir, `verdict-${finding.id}.json`);
+          writeFileSync(path, JSON.stringify(verdict, null, 2));
+          console.error(`[validator:${finding.id}] Verdict saved to ${path}`);
+        }
+        return verdict;
       } finally {
         release();
       }
