@@ -12,38 +12,52 @@ import { prepareHunterPrompt } from "./hunter/index.js";
 
 export async function resolveModules(targetPath: string): Promise<ModuleInfo[]> {
   const sourcesDir = resolve(targetPath, "sources");
-  const files = await readdir(sourcesDir);
-  const moveFiles = files.filter((f) => f.endsWith(".move"));
+
+  // Recursively collect all .move files under sources/
+  async function collectMoveFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const paths: string[] = [];
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        paths.push(...await collectMoveFiles(full));
+      } else if (entry.name.endsWith(".move")) {
+        paths.push(full);
+      }
+    }
+    return paths;
+  }
+
+  const moveFiles = await collectMoveFiles(sourcesDir);
+
+  // Try to read protocol.md once for all modules
+  let protocolDescription: string | undefined;
+  let invariants: string[] | undefined;
+  try {
+    const protocolPath = resolve(targetPath, "protocol.md");
+    const protocol = await readFile(protocolPath, "utf-8");
+
+    const descMatch = protocol.match(/## Description\n([\s\S]*?)(?=\n## )/);
+    if (descMatch) protocolDescription = descMatch[1].trim();
+
+    const invMatch = protocol.match(/## Invariants\n([\s\S]*?)$/);
+    if (invMatch) {
+      invariants = invMatch[1]
+        .split("\n")
+        .filter((l) => l.startsWith("- "))
+        .map((l) => l.replace(/^- /, "").trim());
+    }
+  } catch {
+    // No protocol.md — hunter will work without it
+  }
 
   const modules: ModuleInfo[] = [];
-  for (const file of moveFiles) {
-    const filePath = join(sourcesDir, file);
+  for (const filePath of moveFiles) {
     const source = await readFile(filePath, "utf-8");
 
     // Extract module name from source
     const moduleMatch = source.match(/module\s+([\w:]+)/);
-    const name = moduleMatch ? moduleMatch[1] : file.replace(".move", "");
-
-    // Try to read protocol.md for description and invariants
-    let protocolDescription: string | undefined;
-    let invariants: string[] | undefined;
-    try {
-      const protocolPath = resolve(targetPath, "protocol.md");
-      const protocol = await readFile(protocolPath, "utf-8");
-
-      const descMatch = protocol.match(/## Description\n([\s\S]*?)(?=\n## )/);
-      if (descMatch) protocolDescription = descMatch[1].trim();
-
-      const invMatch = protocol.match(/## Invariants\n([\s\S]*?)$/);
-      if (invMatch) {
-        invariants = invMatch[1]
-          .split("\n")
-          .filter((l) => l.startsWith("- "))
-          .map((l) => l.replace(/^- /, "").trim());
-      }
-    } catch {
-      // No protocol.md — hunter will work without it
-    }
+    const name = moduleMatch ? moduleMatch[1] : filePath.replace(/.*\//, "").replace(".move", "");
 
     modules.push({ name, source, path: filePath, protocolDescription, invariants });
   }
