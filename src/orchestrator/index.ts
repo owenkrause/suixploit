@@ -78,6 +78,14 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       .map((b) => b.text)
       .join("");
     ctx.rankerScores = parseRankerResponse(rankerText);
+
+    // Log all scores sorted by rank
+    const sorted = [...ctx.rankerScores].sort((a, b) => b.score - a.score);
+    for (const s of sorted) {
+      const marker = s.score >= 3 ? ">>>" : "   ";
+      console.error(`  ${marker} [${s.score}/5] ${s.module}`);
+    }
+
     ctx.hunterTargets = filterHighPriority(ctx.rankerScores).length > 0
       ? modules.filter((m) => filterHighPriority(ctx.rankerScores).some((s) => s.module === m.name))
       : modules;
