@@ -112,12 +112,75 @@ export function filterConfirmed(findings: ValidatedFinding[]): ValidatedFinding[
   return findings.filter((f) => f.validatorVerdict !== "rejected");
 }
 
-export function deduplicateFindings(findings: ValidatedFinding[]): ValidatedFinding[] {
-  const dominated = new Set<string>();
-  for (const f of findings) {
-    if (f.duplicateOf) {
-      dominated.add(f.id);
-    }
+export async function deduplicateFindings(
+  client: Anthropic,
+  findings: ValidatedFinding[],
+  model: string
+): Promise<ValidatedFinding[]> {
+  if (findings.length <= 1) return findings;
+
+  const summaries = findings.map((f) => ({
+    id: f.id,
+    module: f.module,
+    severity: f.adjustedSeverity ?? f.severity,
+    title: f.title,
+    description: f.description,
+    impact: f.impact,
+  }));
+
+  const prompt = `You are deduplicating vulnerability findings. Group findings that share the same root cause.
+
+## Findings
+${JSON.stringify(summaries, null, 2)}
+
+For each group of duplicates, pick the ONE finding with the best writeup (most detailed description + impact analysis) as the canonical entry. Mark all others as duplicates of it.
+
+Return a JSON array of objects: { "id": "<finding id>", "duplicateOf": "<canonical id> | null" }
+
+Every finding must appear exactly once. Set duplicateOf to null for canonical findings. Return ONLY the JSON array.`;
+
+  console.error("Running deduplication...");
+  const response = await client.messages.create({
+    model,
+    max_tokens: 4096,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const text = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+
+  try {
+    const dedupResults = parseJsonArray(text) as { id: string; duplicateOf: string | null }[];
+    const dominated = new Set(
+      dedupResults.filter((r) => r.duplicateOf).map((r) => r.id)
+    );
+
+    const deduped = findings.map((f) => {
+      const result = dedupResults.find((r) => r.id === f.id);
+      return { ...f, duplicateOf: result?.duplicateOf ?? undefined };
+    }).filter((f) => !dominated.has(f.id));
+
+    console.error(`Dedup: ${findings.length} -> ${deduped.length} unique findings`);
+    return deduped;
+  } catch {
+    console.error("Dedup parse failed, keeping all findings");
+    return findings;
   }
-  return findings.filter((f) => !dominated.has(f.id));
+}
+
+function parseJsonArray(text: string): unknown[] {
+  const codeBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    const parsed = JSON.parse(codeBlockMatch[1].trim());
+    if (Array.isArray(parsed)) return parsed;
+  }
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start !== -1 && end > start) {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    if (Array.isArray(parsed)) return parsed;
+  }
+  return JSON.parse(text.trim());
 }

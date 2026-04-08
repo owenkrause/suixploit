@@ -40,9 +40,7 @@ You have bash access to the container with all source code at /workspace. Use it
 
 3. **Evaluate severity**: Is the current severity rating accurate given the real-world impact? Adjust if needed.
 
-4. **Check for duplicates**: Review the other findings in this batch. If this finding describes the same root cause as another finding, note which one it duplicates.
-
-5. **Write your verdict**: When done, write your verdict to /workspace/verdict-${finding.id}.json:
+4. **Write your verdict**: When done, write your verdict to /workspace/verdict-${finding.id}.json:
 
 \`\`\`json
 {
@@ -50,8 +48,7 @@ You have bash access to the container with all source code at /workspace. Use it
   "validatorVerdict": "confirmed | adjusted | rejected",
   "adjustedSeverity": "critical | high | medium | low",
   "impact": "Detailed real-world impact analysis. Who is affected, what can an attacker gain, what does it cost them, is it practically exploitable.",
-  "validatorNote": "Technical verification: which code paths were traced, what was confirmed or refuted.",
-  "duplicateOf": null
+  "validatorNote": "Technical verification: which code paths were traced, what was confirmed or refuted."
 }
 \`\`\`
 

@@ -77,7 +77,7 @@ const validated = await runValidators({
   concurrency,
 });
 
-const confirmed = deduplicateFindings(filterConfirmed(validated));
+const confirmed = await deduplicateFindings(client, filterConfirmed(validated), model);
 console.error(`Validator confirmed ${confirmed.length} / ${findings.length} findings after dedup`);
 
 const json = JSON.stringify(confirmed, null, 2);

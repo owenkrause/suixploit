@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterConfirmed, deduplicateFindings } from "./index.js";
+import { filterConfirmed } from "./index.js";
 import { buildValidatorAgentPrompt, buildOtherFindingsSummary } from "./prompt.js";
 import type { Finding, ValidatedFinding } from "../types.js";
 
@@ -68,22 +68,4 @@ describe("filterConfirmed", () => {
   });
 });
 
-describe("deduplicateFindings", () => {
-  it("removes findings marked as duplicates", () => {
-    const findings: ValidatedFinding[] = [
-      { ...sampleFinding, validatorVerdict: "confirmed", validatorNote: "original" },
-      { ...sampleFinding2, validatorVerdict: "confirmed", validatorNote: "dupe", duplicateOf: "f1" },
-    ];
-    const result = deduplicateFindings(findings);
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("f1");
-  });
-
-  it("keeps all findings when no duplicates", () => {
-    const findings: ValidatedFinding[] = [
-      { ...sampleFinding, validatorVerdict: "confirmed", validatorNote: "good" },
-      { ...sampleFinding2, validatorVerdict: "confirmed", validatorNote: "also good" },
-    ];
-    expect(deduplicateFindings(findings)).toHaveLength(2);
-  });
-});
+// deduplicateFindings is async (makes an LLM call) — tested via integration tests

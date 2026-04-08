@@ -124,7 +124,8 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       model,
       concurrency,
     });
-    ctx.findings = deduplicateFindings(filterConfirmed(validated));
+    const confirmed = filterConfirmed(validated);
+    ctx.findings = await deduplicateFindings(client, confirmed, model);
     checkpoint("validated-findings.json", ctx.findings);
     console.error(`Validator confirmed ${ctx.findings.length} finding(s) after dedup.`);
   } else {
