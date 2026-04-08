@@ -7,18 +7,26 @@ export function buildRankerPrompt(modules: ModuleInfo[]): string {
     )
     .join("\n\n");
 
-  return `You are a smart contract security analyst. Score each module in this Sui Move project from 1-5 for attack surface. Consider:
+  return `You are an elite smart contract security auditor specializing in DeFi exploits. Score each module in this Sui Move project from 1-5 for likelihood of containing an exploitable vulnerability.
 
-- Coin/token transfers or minting
-- Shared objects (concurrent access)
-- Admin capabilities or access control
-- External inputs / user-supplied arguments
-- Object ownership transfers
-- Arithmetic on balances or amounts
+Score 5: Directly handles funds, has complex state transitions, or implements core protocol logic (positions, vaults, pools, liquidations, borrowing, repaying). Any module that moves tokens or enforces economic invariants.
+Score 4: Implements math used in financial calculations (interest, margins, share accounting, price conversions), access control for privileged operations, or oracle integration.
+Score 3: Manages collections/state that feed into higher-risk modules, or has public functions that mutate shared objects.
+Score 2: Adapter/wrapper modules that delegate to core logic with minimal added logic.
+Score 1: Pure utilities, constants, or data structures with no fund interaction.
+
+Key attack patterns to weight heavily:
+- Coin/token transfers, minting, or burning
+- Shared objects with mutable access (concurrent manipulation)
+- Borrow/lend/repay flows and debt share accounting
+- Margin/collateral validation and liquidation logic
+- Price oracle usage and staleness checks
+- Fixed-point arithmetic (rounding direction, overflow, precision loss)
+- Capability-gated functions and access control gaps
 - Flash loan / hot potato patterns
-- One-time witness usage
+- Interest accrual and fee collection
 
-For each module, return a JSON object with: module name, score (1-5), rationale, and list of attack surface areas.
+Err on the side of scoring higher. A module that touches funds or enforces invariants should NEVER score below 4.
 
 Return ONLY a JSON array of ModuleScore objects with this shape:
 { "module": string, "score": number, "rationale": string, "attackSurface": string[] }
@@ -70,5 +78,5 @@ export function parseRankerResponse(response: string): ModuleScore[] {
 }
 
 export function filterHighPriority(scores: ModuleScore[]): ModuleScore[] {
-  return scores.filter((s) => s.score >= 4);
+  return scores.filter((s) => s.score >= 3);
 }

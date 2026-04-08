@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { resolve } from "node:path";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync } from "node:fs";
 import type { ModuleInfo, Finding, ValidatedFinding, ScanResult } from "../types.js";
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "../ranker/index.js";
@@ -97,7 +97,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       ctx.hunterTargets.map(async (mod) => {
         const release = await sem.acquire();
         try {
-          const findings = await runMainnetHunter(client, mod, workDir, model, maxTurns, packageId!);
+          const findings = await runMainnetHunter(client, mod, workDir, checkpointDir, model, maxTurns, packageId!);
           if (findings.length > 0) {
             checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, findings);
             allFindings.push(...findings);
@@ -169,6 +169,7 @@ async function runMainnetHunter(
   client: Anthropic,
   mod: ModuleInfo,
   workDir: string,
+  checkpointDir: string,
   model: string,
   maxTurns: number | undefined,
   packageId: string
@@ -177,9 +178,27 @@ async function runMainnetHunter(
   const hunterPrompt = buildMainnetHunterPrompt(mod, packageId, rpcUrl);
   const systemPrompt = buildMainnetSystemPrompt(hunterPrompt, { rpcUrl, packageId });
 
+  // Create isolated workspace per hunter so scripts don't pollute source dir
+  const safeName = mod.name.replace(/::/g, "-");
+  const workspace = resolve(checkpointDir, `workspace-${safeName}`);
+  mkdirSync(workspace, { recursive: true });
+
+  // Symlink source dir so agent can read .move files
+  const srcLink = resolve(workspace, "sources");
+  if (!existsSync(srcLink)) {
+    symlinkSync(resolve(workDir, "sources"), srcLink);
+  }
+
+  // Symlink node_modules so agent can run npx tsx
+  const projectRoot = resolve(import.meta.dirname, "../..");
+  const nmLink = resolve(workspace, "node_modules");
+  if (!existsSync(nmLink)) {
+    symlinkSync(resolve(projectRoot, "node_modules"), nmLink);
+  }
+
   console.error(`[${mod.name}] Running locally (mainnet dry-run)...`);
   const result = await runAgent(client, {
-    exec: makeLocalExec(workDir),
+    exec: makeLocalExec(workspace),
     systemPrompt,
     model,
     maxTurns,
@@ -189,7 +208,7 @@ async function runMainnetHunter(
   console.error(`[${mod.name}] Agent finished: ${result.stopped} after ${result.turns} turns (${result.inputTokens + result.outputTokens} tokens)`);
 
   try {
-    const findingsJson = readFileSync(resolve(workDir, "findings.json"), "utf-8");
+    const findingsJson = readFileSync(resolve(workspace, "findings.json"), "utf-8");
     return JSON.parse(findingsJson) as Finding[];
   } catch {
     return [];
