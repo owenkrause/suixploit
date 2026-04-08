@@ -1,9 +1,99 @@
 import type { ModuleInfo, ModuleScore } from "../types.js";
 
+/**
+ * Extract security-relevant signatures from Move source:
+ * struct definitions, public/entry function signatures, friend declarations, use statements.
+ * Strips function bodies to keep the ranker prompt small.
+ */
+function extractSignatures(source: string): string {
+  const lines = source.split("\n");
+  const result: string[] = [];
+  let braceDepth = 0;
+  let inFnBody = false;
+  let inStructDef = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Always keep: module declaration, use, friend, const, struct, has
+    if (
+      /^module\s/.test(trimmed) ||
+      /^use\s/.test(trimmed) ||
+      /^friend\s/.test(trimmed) ||
+      /^const\s/.test(trimmed)
+    ) {
+      result.push(line);
+      continue;
+    }
+
+    // Struct definitions — keep the whole thing (fields show what data is held)
+    if (/^(public\s+)?struct\s/.test(trimmed) || /^\bstruct\s/.test(trimmed)) {
+      inStructDef = true;
+    }
+    if (inStructDef) {
+      result.push(line);
+      if (trimmed.includes("{")) braceDepth += (trimmed.match(/{/g) || []).length;
+      if (trimmed.includes("}")) braceDepth -= (trimmed.match(/}/g) || []).length;
+      if (braceDepth <= 0) {
+        inStructDef = false;
+        braceDepth = 0;
+      }
+      continue;
+    }
+
+    // Function signatures — keep the signature line, skip the body
+    if (/^(public(\s*\(friend\))?\s+)?(entry\s+)?fun\s/.test(trimmed)) {
+      result.push(line);
+      // If the body starts on this line, start tracking depth
+      if (trimmed.includes("{")) {
+        inFnBody = true;
+        braceDepth = (trimmed.match(/{/g) || []).length - (trimmed.match(/}/g) || []).length;
+        if (braceDepth <= 0) {
+          inFnBody = false;
+          braceDepth = 0;
+        }
+      }
+      continue;
+    }
+
+    // Multi-line function signature (params spanning lines before the body)
+    if (!inFnBody && result.length > 0 && /^(public|entry|fun)\s/.test(result[result.length - 1]?.trim() ?? "")) {
+      // Still in the signature if we haven't seen { yet
+      if (!trimmed.includes("{")) {
+        result.push(line);
+        continue;
+      } else {
+        // Signature ends, body begins
+        result.push(line.split("{")[0]);
+        inFnBody = true;
+        braceDepth = (trimmed.match(/{/g) || []).length - (trimmed.match(/}/g) || []).length;
+        if (braceDepth <= 0) {
+          inFnBody = false;
+          braceDepth = 0;
+        }
+        continue;
+      }
+    }
+
+    // Skip function body lines
+    if (inFnBody) {
+      if (trimmed.includes("{")) braceDepth += (trimmed.match(/{/g) || []).length;
+      if (trimmed.includes("}")) braceDepth -= (trimmed.match(/}/g) || []).length;
+      if (braceDepth <= 0) {
+        inFnBody = false;
+        braceDepth = 0;
+      }
+      continue;
+    }
+  }
+
+  return result.filter(l => l.trim().length > 0).join("\n");
+}
+
 export function buildRankerPrompt(modules: ModuleInfo[]): string {
   const moduleBlocks = modules
     .map(
-      (m) => `### Module: ${m.name}\n\`\`\`move\n${m.source}\n\`\`\``
+      (m) => `### Module: ${m.name}\n\`\`\`move\n${extractSignatures(m.source)}\n\`\`\``
     )
     .join("\n\n");
 
