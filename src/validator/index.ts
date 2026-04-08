@@ -34,15 +34,27 @@ Return ONLY a JSON array.`;
 }
 
 export function parseValidatorResponse(response: string): ValidatedFinding[] {
+  // Try multiple extraction strategies
+  // 1. Code fence extraction
   const codeBlockMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-  const jsonStr = codeBlockMatch ? codeBlockMatch[1].trim() : response.trim();
+  if (codeBlockMatch) {
+    const parsed = JSON.parse(codeBlockMatch[1].trim());
+    if (Array.isArray(parsed)) return parsed as ValidatedFinding[];
+  }
 
-  const parsed = JSON.parse(jsonStr);
+  // 2. Find the first [ ... ] JSON array in the response
+  const arrayStart = response.indexOf("[");
+  const arrayEnd = response.lastIndexOf("]");
+  if (arrayStart !== -1 && arrayEnd > arrayStart) {
+    const parsed = JSON.parse(response.slice(arrayStart, arrayEnd + 1));
+    if (Array.isArray(parsed)) return parsed as ValidatedFinding[];
+  }
 
+  // 3. Raw parse
+  const parsed = JSON.parse(response.trim());
   if (!Array.isArray(parsed)) {
     throw new Error("Validator response must be a JSON array");
   }
-
   return parsed as ValidatedFinding[];
 }
 

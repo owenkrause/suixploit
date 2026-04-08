@@ -29,17 +29,37 @@ ${moduleBlocks}`;
 }
 
 export function parseRankerResponse(response: string): ModuleScore[] {
-  // Try to extract JSON from markdown code block
-  const codeBlockMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-  const jsonStr = codeBlockMatch ? codeBlockMatch[1].trim() : response.trim();
+  let parsed: unknown;
 
-  const parsed = JSON.parse(jsonStr);
+  // 1. Code fence extraction
+  const codeBlockMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    try {
+      parsed = JSON.parse(codeBlockMatch[1].trim());
+    } catch { /* fall through */ }
+  }
+
+  // 2. Find first JSON array
+  if (!Array.isArray(parsed)) {
+    const arrayStart = response.indexOf("[");
+    const arrayEnd = response.lastIndexOf("]");
+    if (arrayStart !== -1 && arrayEnd > arrayStart) {
+      try {
+        parsed = JSON.parse(response.slice(arrayStart, arrayEnd + 1));
+      } catch { /* fall through */ }
+    }
+  }
+
+  // 3. Raw parse
+  if (!Array.isArray(parsed)) {
+    parsed = JSON.parse(response.trim());
+  }
 
   if (!Array.isArray(parsed)) {
     throw new Error("Ranker response must be a JSON array");
   }
 
-  return parsed.map((item: Record<string, unknown>) => ({
+  return (parsed as Record<string, unknown>[]).map((item) => ({
     module: String(item.module),
     score: Number(item.score),
     rationale: String(item.rationale),
