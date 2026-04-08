@@ -25,12 +25,24 @@ export async function buildImage(dockerfilePath: string, contextPath: string): P
   console.error("Image built successfully.");
 }
 
-export async function startContainer(targetContract: string): Promise<string> {
-  const { stdout } = await execFileAsync("docker", [
+export interface ContainerOptions {
+  targetContract: string;
+  network: "devnet" | "mainnet";
+  packageId?: string;
+}
+
+export async function startContainer(opts: ContainerOptions): Promise<string> {
+  const args = [
     "run", "-d",
-    "-e", `TARGET_CONTRACT=${targetContract}`,
-    "suixploit-hunter",
-  ]);
+    "-e", `TARGET_CONTRACT=${opts.targetContract}`,
+    "-e", `NETWORK=${opts.network}`,
+  ];
+  if (opts.packageId) {
+    args.push("-e", `PACKAGE_ID=${opts.packageId}`);
+  }
+  args.push("suixploit-hunter");
+
+  const { stdout } = await execFileAsync("docker", args);
   return stdout.trim();
 }
 

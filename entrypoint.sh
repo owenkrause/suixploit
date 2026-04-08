@@ -2,7 +2,27 @@
 set -euo pipefail
 
 TARGET_CONTRACT="${TARGET_CONTRACT:?TARGET_CONTRACT env var must be set}"
+NETWORK="${NETWORK:-devnet}"
 
+# ── Mainnet mode: no devnet, no deploy, just write context and go ──
+if [ "$NETWORK" = "mainnet" ]; then
+  PACKAGE_ID="${PACKAGE_ID:?PACKAGE_ID env var must be set for mainnet}"
+  RPC_URL="https://fullnode.mainnet.sui.io:443"
+
+  cat > /workspace/context.json <<CONTEXT
+{
+  "rpcUrl": "$RPC_URL",
+  "packageId": "$PACKAGE_ID",
+  "network": "mainnet"
+}
+CONTEXT
+
+  echo "=== Container ready (mainnet dry-run) ==="
+  touch /workspace/.ready
+  exec tail -f /dev/null
+fi
+
+# ── Devnet mode: boot local network, deploy contract ──
 echo "=== Starting Sui devnet ==="
 RUST_LOG="off,sui_node=info" sui start --with-faucet --force-regenesis &
 SUI_PID=$!
@@ -63,12 +83,13 @@ done
 # Wait for faucet transactions to finalize
 sleep 3
 
-# Publish contract using test-publish for local/ephemeral networks
+# Publish contract using test-publish for local/ephemeral environments
 echo "=== Publishing contract: $TARGET_CONTRACT ==="
 sui client switch --address "$ADMIN_ADDRESS" 2>/dev/null
 
 PUBLISH_OUTPUT=$(sui client test-publish "/workspace/${TARGET_CONTRACT}" \
   --skip-dependency-verification \
+  --publish-unpublished-deps \
   --gas-budget 500000000 \
   --build-env testnet \
   --json 2>&1) || true

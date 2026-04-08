@@ -6,7 +6,7 @@ import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "../r
 import { buildValidatorPrompt, parseValidatorResponse, filterConfirmed } from "../validator/index.js";
 import { prepareHunterPrompt } from "../hunter/index.js";
 import { buildImage, startContainer, waitForReady, readContextJson, readFindings } from "./docker.js";
-import { buildSystemPrompt, runAgent } from "./agent.js";
+import { buildSystemPrompt, buildMainnetSystemPrompt, runAgent } from "./agent.js";
 import { Semaphore } from "./semaphore.js";
 import { ResourceTracker } from "./tracker.js";
 
@@ -14,14 +14,16 @@ export interface ScanOptions {
   target: string;
   concurrency: number;
   model: string;
-  maxTurns: number;
+  maxTurns?: number;
   keepContainers: boolean;
+  network: "devnet" | "mainnet";
+  packageId?: string;
   protocol?: string;
   invariants?: string[];
 }
 
 export async function runScan(options: ScanOptions): Promise<ScanResult> {
-  const { target, concurrency, model, maxTurns, keepContainers } = options;
+  const { target, concurrency, model, maxTurns, keepContainers, network, packageId } = options;
 
   const tracker = new ResourceTracker();
   tracker.registerCleanupHandlers(keepContainers);
@@ -81,7 +83,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     ctx.hunterTargets.map(async (mod) => {
       const release = await sem.acquire();
       try {
-        return await runHunterForModule(client, tracker, mod, target, model, maxTurns);
+        return await runHunterForModule(client, tracker, mod, target, model, maxTurns, network, packageId);
       } finally {
         release();
       }
@@ -126,11 +128,17 @@ async function runHunterForModule(
   mod: ModuleInfo,
   target: string,
   model: string,
-  maxTurns: number
+  maxTurns?: number,
+  network: "devnet" | "mainnet" = "devnet",
+  packageId?: string
 ): Promise<Finding[]> {
-  console.error(`[${mod.name}] Starting container...`);
+  console.error(`[${mod.name}] Starting container (${network})...`);
 
-  const containerId = await startContainer(target);
+  const containerId = await startContainer({
+    targetContract: target,
+    network,
+    packageId,
+  });
   tracker.add(containerId);
 
   console.error(`[${mod.name}] Container ${containerId.slice(0, 12)} — waiting for ready...`);
@@ -138,26 +146,33 @@ async function runHunterForModule(
 
   const context = await readContextJson(containerId);
 
-  const hunterPrompt = prepareHunterPrompt({
-    module: mod,
-    devnetConfig: {
-      rpcUrl: context.rpcUrl,
-      faucetUrl: context.faucetUrl,
-      port: 9000,
-      faucetPort: 9123,
-      adminAddress: context.adminAddress,
-      attackerAddress: context.attackerAddress,
-      userAddress: context.userAddress,
-      adminKeyPair: context.adminKeyPair ?? "",
-      attackerKeyPair: context.attackerKeyPair ?? "",
-      userKeyPair: context.userKeyPair ?? "",
-    },
-    packageId: context.packageId,
-  });
+  let hunterPrompt: string;
+  let systemPrompt: string;
 
-  const systemPrompt = buildSystemPrompt(hunterPrompt, context);
+  if (network === "mainnet") {
+    hunterPrompt = buildMainnetHunterPrompt(mod, context.packageId, context.rpcUrl);
+    systemPrompt = buildMainnetSystemPrompt(hunterPrompt, context);
+  } else {
+    hunterPrompt = prepareHunterPrompt({
+      module: mod,
+      devnetConfig: {
+        rpcUrl: context.rpcUrl,
+        faucetUrl: context.faucetUrl,
+        port: 9000,
+        faucetPort: 9123,
+        adminAddress: context.adminAddress,
+        attackerAddress: context.attackerAddress,
+        userAddress: context.userAddress,
+        adminKeyPair: context.adminKeyPair ?? "",
+        attackerKeyPair: context.attackerKeyPair ?? "",
+        userKeyPair: context.userKeyPair ?? "",
+      },
+      packageId: context.packageId,
+    });
+    systemPrompt = buildSystemPrompt(hunterPrompt, context);
+  }
 
-  console.error(`[${mod.name}] Running agent (model: ${model}, max turns: ${maxTurns})...`);
+  console.error(`[${mod.name}] Running agent (model: ${model}${maxTurns ? `, max turns: ${maxTurns}` : ''})...`);
   const result = await runAgent(client, {
     containerId,
     systemPrompt,
@@ -175,4 +190,86 @@ async function runHunterForModule(
   } catch {
     return [];
   }
+}
+
+function buildMainnetHunterPrompt(
+  mod: ModuleInfo,
+  packageId: string,
+  rpcUrl: string
+): string {
+  const invariantList = (mod.invariants ?? []).map((inv) => `- ${inv}`).join("\n");
+
+  return `You are auditing a live Sui Move smart contract on mainnet for security vulnerabilities.
+
+## Target
+Module: ${mod.name}
+Package ID: ${packageId}
+RPC: ${rpcUrl}
+Protocol description: ${mod.protocolDescription ?? "No description provided."}
+
+Invariants:
+${invariantList || "- None specified"}
+
+## Source
+\`\`\`move
+${mod.source}
+\`\`\`
+
+## How to test exploits (dry-run only — nothing executes on-chain)
+
+Use \`sui_devInspectTransactionBlock\` or \`sui_dryRunTransactionBlock\` to simulate transactions against real mainnet state. This lets you test any exploit scenario without risk.
+
+### Using the TypeScript SDK:
+\`\`\`typescript
+import { SuiClient } from "@mysten/sui/client";
+import { Transaction } from "@mysten/sui/transactions";
+
+const client = new SuiClient({ url: "${rpcUrl}" });
+
+// Build your exploit transaction
+const tx = new Transaction();
+tx.moveCall({
+  target: "${packageId}::module::function",
+  arguments: [/* ... */],
+});
+
+// Dry-run: simulate against real mainnet state, no signature needed
+const result = await client.devInspectTransactionBlock({
+  transactionBlock: tx,
+  sender: "0x0000000000000000000000000000000000000000000000000000000000000000",
+});
+
+console.log("Status:", result.effects.status);
+console.log("Events:", result.events);
+\`\`\`
+
+### Reading on-chain state:
+\`\`\`typescript
+// Query objects, balances, events on mainnet
+const obj = await client.getObject({ id: "0x...", options: { showContent: true } });
+const events = await client.queryEvents({ query: { MoveModule: { package: "${packageId}", module: "${mod.name}" } } });
+\`\`\`
+
+Save exploit scripts as .ts files and run with \`npx tsx <file>\`.
+
+## Task
+1. Read and analyze the source code for vulnerabilities
+2. Query mainnet state to understand the contract's current deployment (objects, pools, balances)
+3. Craft exploit transactions and dry-run them to prove they work
+4. A successful dry-run with status "success" that violates an invariant = confirmed vulnerability
+
+When done, write findings to /workspace/findings.json:
+\`\`\`json
+[{
+  "id": "unique-id",
+  "module": "${mod.name}",
+  "severity": "critical|high|medium|low",
+  "category": "capability_misuse|shared_object_race|integer_overflow|ownership_violation|hot_potato_misuse|otw_abuse|other",
+  "title": "Short title",
+  "description": "What the bug is and how to exploit it",
+  "exploitTransaction": "// the TS exploit code",
+  "oracleResult": { "signal": "dry_run", "status": "EXPLOIT_CONFIRMED", "dryRunResult": "paste dry-run output" },
+  "iterations": 3
+}]
+\`\`\``;
 }

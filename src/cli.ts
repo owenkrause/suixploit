@@ -16,18 +16,27 @@ program
   .argument("<target>", "Path to Move project directory")
   .option("--concurrency <n>", "Max parallel agents", "5")
   .option("--model <model>", "Model for agents", "claude-sonnet-4-6")
-  .option("--max-turns <n>", "Max turns per hunter agent", "50")
+  .option("--max-turns <n>", "Max turns per hunter agent (default: unlimited)")
   .option("--output <path>", "Write ScanResult JSON to file (default: stdout)")
   .option("--keep-containers", "Don't remove containers after run", false)
+  .option("--network <network>", "Network mode: devnet or mainnet", "devnet")
+  .option("--package-id <id>", "On-chain package ID (required for mainnet)")
   .option("--protocol <description>", "Protocol description override")
   .option("--invariants <invariants...>", "Invariants to test against")
   .action(async (target: string, options) => {
+    if (options.network === "mainnet" && !options.packageId) {
+      console.error("Error: --package-id is required when --network is mainnet");
+      process.exit(1);
+    }
+
     const result = await runScan({
       target,
       concurrency: parseInt(options.concurrency, 10),
       model: options.model,
-      maxTurns: parseInt(options.maxTurns, 10),
+      maxTurns: options.maxTurns ? parseInt(options.maxTurns, 10) : undefined,
       keepContainers: options.keepContainers,
+      network: options.network as "devnet" | "mainnet",
+      packageId: options.packageId,
       protocol: options.protocol,
       invariants: options.invariants,
     });
