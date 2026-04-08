@@ -21,6 +21,7 @@ program
   .option("--keep-containers", "Don't remove containers after run", false)
   .option("--network <network>", "Network mode: devnet or mainnet", "devnet")
   .option("--package-id <id>", "On-chain package ID (required for mainnet)")
+  .option("--checkpoint-dir <path>", "Directory for checkpoint files (default: <target>/.suixploit)")
   .option("--protocol <description>", "Protocol description override")
   .option("--invariants <invariants...>", "Invariants to test against")
   .action(async (target: string, options) => {
@@ -37,6 +38,7 @@ program
       keepContainers: options.keepContainers,
       network: options.network as "devnet" | "mainnet",
       packageId: options.packageId,
+      checkpointDir: options.checkpointDir,
       protocol: options.protocol,
       invariants: options.invariants,
     });

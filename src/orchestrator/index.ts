@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import type { ModuleInfo, Finding, ValidatedFinding, ScanResult } from "../types.js";
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "../ranker/index.js";
@@ -20,10 +21,20 @@ export interface ScanOptions {
   packageId?: string;
   protocol?: string;
   invariants?: string[];
+  checkpointDir?: string;
 }
 
 export async function runScan(options: ScanOptions): Promise<ScanResult> {
   const { target, concurrency, model, maxTurns, keepContainers, network, packageId } = options;
+
+  // Set up checkpoint directory
+  const checkpointDir = options.checkpointDir ?? resolve(target, ".suixploit");
+  mkdirSync(checkpointDir, { recursive: true });
+  const checkpoint = (name: string, data: unknown) => {
+    const path = resolve(checkpointDir, name);
+    writeFileSync(path, JSON.stringify(data, null, 2));
+    console.error(`Checkpoint saved: ${path}`);
+  };
 
   const tracker = new ResourceTracker();
   tracker.registerCleanupHandlers(keepContainers);
@@ -78,12 +89,20 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   // Step 4: Spawn containers and run hunters
   console.error(`Spawning ${ctx.hunterTargets.length} hunter(s) (concurrency: ${concurrency})...`);
   const sem = new Semaphore(concurrency);
+  const allFindings: Finding[] = [];
 
   const hunterResults = await Promise.all(
     ctx.hunterTargets.map(async (mod) => {
       const release = await sem.acquire();
       try {
-        return await runHunterForModule(client, tracker, mod, target, model, maxTurns, network, packageId);
+        const result = await runHunterForModule(client, tracker, mod, target, model, maxTurns, network, packageId);
+        // Checkpoint each hunter's findings as they complete
+        if (result.findings.length > 0) {
+          checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, result.findings);
+          allFindings.push(...result.findings);
+          checkpoint("all-findings.json", allFindings);
+        }
+        return result;
       } finally {
         release();
       }
@@ -106,6 +125,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       concurrency,
     });
     ctx.findings = deduplicateFindings(filterConfirmed(validated));
+    checkpoint("validated-findings.json", ctx.findings);
     console.error(`Validator confirmed ${ctx.findings.length} finding(s) after dedup.`);
   } else {
     ctx.findings = [];
