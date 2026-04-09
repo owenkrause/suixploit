@@ -71,7 +71,7 @@ describe("buildHunterPrompt", () => {
       network: "devnet",
       relatedModuleSignatures: "module test::helper { public fun do_thing() }",
     });
-    expect(prompt).toContain("Related Modules");
+    expect(prompt).toContain("Related modules");
     expect(prompt).toContain("module test::helper");
   });
 
@@ -88,7 +88,7 @@ describe("buildHunterPrompt", () => {
       packageId: "0xpkg",
       network: "devnet",
     });
-    expect(prompt).not.toContain("Related Modules");
+    expect(prompt).not.toContain("Related modules");
   });
 
   it("contains oracle section with check.ts command", () => {
@@ -107,7 +107,7 @@ describe("buildHunterPrompt", () => {
     expect(prompt).toContain("npx tsx src/oracle/check.ts");
   });
 
-  it("contains 'Verify assumptions' section", () => {
+  it("contains Sui platform context section", () => {
     const prompt = buildHunterPrompt({
       moduleName: "test::mod",
       moduleSource: "source",
@@ -120,7 +120,7 @@ describe("buildHunterPrompt", () => {
       packageId: "0xpkg",
       network: "devnet",
     });
-    expect(prompt).toContain("Verify assumptions");
+    expect(prompt).toContain("Sui platform");
   });
 
   it("contains output format with vulns.json and findings.json", () => {
@@ -155,10 +155,9 @@ describe("buildHunterPrompt", () => {
       packageId: "0xpkg",
       network: "devnet",
     });
-    expect(prompt).toContain("Sui devnet RPC");
+    expect(prompt).toContain("devnet");
     expect(prompt).toContain("0xattacker");
-    expect(prompt).toContain("0xadmin");
-    expect(prompt).toContain("0xuser");
+    expect(prompt).toContain("signAndExecuteTransaction");
   });
 
   // ── Mainnet-specific ─────────────────────────────────────────
