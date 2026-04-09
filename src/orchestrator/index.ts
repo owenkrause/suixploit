@@ -26,7 +26,7 @@ export interface ScanOptions {
   packageId?: string;
   protocol?: string;
   invariants?: string[];
-  checkpointDir?: string;
+  outputDir?: string;
   include?: string[];
 }
 
@@ -35,8 +35,8 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
 
   // Set up checkpoint directory structure: .suixploit/<timestamp>/ at project root
   const projectRoot = resolve(import.meta.dirname, "../..");
-  const checkpointDir = options.checkpointDir ?? resolve(projectRoot, ".suixploit", generateRunId());
-  const paths = buildScanPaths(checkpointDir);
+  const outputDir = options.outputDir ?? resolve(projectRoot, ".suixploit", generateRunId());
+  const paths = buildScanPaths(outputDir);
   for (const dir of [paths.root, paths.findingsDir, paths.huntersDir, paths.validatorsDir]) {
     mkdirSync(dir, { recursive: true });
   }

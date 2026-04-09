@@ -17,7 +17,7 @@ Options:
 - `--max-turns <n>` — Max turns per hunter agent (default: unlimited)
 - `--include <patterns...>` — Only hunt modules matching these substrings
 - `--keep-containers` — Keep Docker containers after devnet runs
-- `--checkpoint-dir <path>` — Override output directory
+- `--output <path>` — Override output directory
 - `--protocol <description>` — Protocol description override
 - `--invariants <invariants...>` — Invariants to test against
 

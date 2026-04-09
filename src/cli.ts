@@ -29,7 +29,7 @@ program
   .option("--keep-containers", "Don't remove containers after run", false)
   .option("--network <network>", "Network mode: devnet or mainnet", "mainnet")
   .option(
-    "--checkpoint-dir <path>",
+    "--output <path>",
     "Override run output directory (default: .suixploit/<timestamp>)",
   )
   .option("--protocol <description>", "Protocol description override")
@@ -70,7 +70,7 @@ program
       keepContainers: options.keepContainers,
       network: options.network as "devnet" | "mainnet",
       packageId: options.packageId,
-      checkpointDir: options.checkpointDir,
+      outputDir: options.output,
       protocol: options.protocol,
       invariants: options.invariants,
       include: options.include,
