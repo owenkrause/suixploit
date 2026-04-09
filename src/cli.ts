@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { writeFileSync } from "node:fs";
 import { runScan } from "./orchestrator/index.js";
 
 const program = new Command();
@@ -18,12 +17,11 @@ program
   .option("--concurrency <n>", "Max parallel agents", "5")
   .option("--model <model>", "Model for agents", "claude-opus-4-6")
   .option("--max-turns <n>", "Max turns per hunter agent (default: unlimited)")
-  .option("--output <path>", "Write ScanResult JSON to file (default: stdout)")
   .option("--keep-containers", "Don't remove containers after run", false)
   .option("--network <network>", "Network mode: devnet or mainnet", "mainnet")
   .option(
     "--checkpoint-dir <path>",
-    "Directory for checkpoint files (default: <target>/.suixploit)",
+    "Override run output directory (default: .suixploit/<timestamp>)",
   )
   .option("--protocol <description>", "Protocol description override")
   .option("--invariants <invariants...>", "Invariants to test against")
@@ -34,7 +32,7 @@ program
       process.exit(1);
     }
 
-    const result = await runScan({
+    await runScan({
       target,
       concurrency: parseInt(options.concurrency, 10),
       model: options.model,
@@ -47,15 +45,6 @@ program
       invariants: options.invariants,
       include: options.include,
     });
-
-    const json = JSON.stringify(result, null, 2);
-
-    if (options.output) {
-      writeFileSync(options.output, json);
-      console.error(`Results written to ${options.output}`);
-    } else {
-      console.log(json);
-    }
   });
 
 program.parse();

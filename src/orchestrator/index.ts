@@ -234,7 +234,14 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   scanMeta.findingsValidated = ctx.findings.length;
   writeFileSync(paths.scanMeta, JSON.stringify(scanMeta, null, 2));
 
-  return buildScanResult(ctx);
+  // Write full result to run directory
+  const result = buildScanResult(ctx);
+  writeFileSync(resolve(paths.root, "result.json"), JSON.stringify(result, null, 2));
+
+  logStep(`Scan complete — ${ctx.findings.length} finding(s)`);
+  logDetail(`results: ${paths.root}`);
+
+  return result;
 }
 
 async function runMainnetHunter(
