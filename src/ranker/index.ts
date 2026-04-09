@@ -118,7 +118,7 @@ Key attack patterns to weight heavily:
 
 Err on the side of scoring higher. A module that touches funds or enforces invariants should NEVER score below 4.
 
-Return ONLY a JSON array of ModuleScore objects with this shape:
+Return ONLY a JSON array. Keep rationale under 20 words. No markdown, no code fences — raw JSON only.
 { "module": string, "score": number, "rationale": string, "attackSurface": string[] }
 
 ## Modules
