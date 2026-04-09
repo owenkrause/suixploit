@@ -7,8 +7,6 @@ import type {
   ValidatedFinding,
   ScanResult,
 } from "./types.js";
-import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "./ranker/index.js";
-import { prepareHunterPrompt } from "./hunter/index.js";
 
 export async function resolveModules(targetPath: string): Promise<ModuleInfo[]> {
   // Recursively find all .move files inside any sources/ directory, skipping tests/ and build/
@@ -97,8 +95,10 @@ export function buildPipelineContext(target: string, modules: ModuleInfo[]): Pip
   };
 }
 
+const RANKER_SKIP_THRESHOLD = 3;
+
 export function shouldSkipRanker(modules: ModuleInfo[]): boolean {
-  return modules.length <= 3;
+  return modules.length <= RANKER_SKIP_THRESHOLD;
 }
 
 export function buildScanResult(ctx: PipelineContext): ScanResult {

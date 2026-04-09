@@ -5,7 +5,9 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { checkAbort } from "./abort.js";
 import { checkBalance, type BalanceChange } from "./balance.js";
 import { checkOwnership } from "./ownership.js";
-import type { OracleResult } from "../types.js";
+import type { OracleResult, OracleSignal } from "../types.js";
+
+const VALID_SIGNALS: OracleSignal[] = ["abort", "balance", "ownership", "custom"];
 
 const { values } = parseArgs({
   options: {
@@ -13,6 +15,7 @@ const { values } = parseArgs({
     tx: { type: "string", short: "t" },
     attacker: { type: "string", short: "a" },
     "rpc-url": { type: "string", default: "http://127.0.0.1:9000" },
+    network: { type: "string", short: "n" },
     expected: { type: "string" },
   },
 });
@@ -23,13 +26,30 @@ if (!values.signal || !values.tx || !values.attacker) {
   console.error("  --tx        Path to TS file that exports a buildTx(client, attacker) function");
   console.error("  --attacker  Attacker address");
   console.error("  --rpc-url   Sui RPC URL (default: http://127.0.0.1:9000)");
+  console.error("  --network   Network hint: localnet, devnet, mainnet (auto-detected from rpc-url if omitted)");
   console.error("  --expected  Expected behavior for abort signal (should_abort)");
   process.exit(1);
 }
 
+if (!VALID_SIGNALS.includes(values.signal as OracleSignal)) {
+  console.error(`Unknown signal: ${values.signal}. Use one of: ${VALID_SIGNALS.join(", ")}`);
+  process.exit(1);
+}
+
+// Detect network from RPC URL if not explicitly provided
+function detectNetwork(rpcUrl: string): "localnet" | "devnet" | "testnet" | "mainnet" {
+  if (rpcUrl.includes("mainnet")) return "mainnet";
+  if (rpcUrl.includes("testnet")) return "testnet";
+  if (rpcUrl.includes("devnet")) return "devnet";
+  return "localnet";
+}
+
+const rpcUrl = values["rpc-url"]!;
+const network = (values.network as "localnet" | "devnet" | "testnet" | "mainnet") ?? detectNetwork(rpcUrl);
+
 const client = new SuiJsonRpcClient({
-  url: values["rpc-url"]!,
-  network: "localnet",
+  url: rpcUrl,
+  network,
 });
 
 // Dynamically import the exploit transaction module
@@ -56,6 +76,8 @@ const dryRunResult = await client.dryRunTransactionBlock({
 
 let result!: OracleResult;
 
+const VALID_OBJECT_CHANGE_TYPES = new Set(["created", "mutated", "deleted", "wrapped", "published"]);
+
 switch (values.signal) {
   case "abort":
     result = checkAbort(
@@ -71,17 +93,19 @@ switch (values.signal) {
   case "ownership":
     result = checkOwnership(
       values.attacker!,
-      (dryRunResult.objectChanges ?? []).map((c: Record<string, unknown>) => ({
-        type: (c.type as string) as "created" | "mutated" | "deleted" | "wrapped" | "published",
-        objectId: (c.objectId as string) ?? "",
-        owner: c.owner as Record<string, unknown> | undefined,
-        sender: (c.sender as string) ?? values.attacker!,
-      }))
+      (dryRunResult.objectChanges ?? [])
+        .filter((c: Record<string, unknown>) => typeof c.type === "string" && VALID_OBJECT_CHANGE_TYPES.has(c.type))
+        .map((c: Record<string, unknown>) => ({
+          type: c.type as "created" | "mutated" | "deleted" | "wrapped" | "published",
+          objectId: String(c.objectId ?? ""),
+          owner: c.owner as Record<string, unknown> | undefined,
+          sender: String(c.sender ?? values.attacker!),
+        }))
     );
     break;
 
   default:
-    console.error(`Unknown signal: ${values.signal}. Use abort, balance, or ownership.`);
+    console.error(`Unknown signal: ${values.signal}. Use one of: ${VALID_SIGNALS.join(", ")}`);
     process.exit(1);
 }
 

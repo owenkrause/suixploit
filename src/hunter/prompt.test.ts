@@ -13,6 +13,7 @@ describe("buildHunterPrompt", () => {
       userAddress: "0xuser",
       rpcUrl: "http://127.0.0.1:9100",
       packageId: "0xpkg",
+      network: "devnet",
     });
     expect(prompt).toContain("test::vault");
     expect(prompt).toContain("module test::vault { }");
@@ -33,9 +34,174 @@ describe("buildHunterPrompt", () => {
       userAddress: "0xc",
       rpcUrl: "http://127.0.0.1:9100",
       packageId: "0xpkg",
+      network: "devnet",
     });
     expect(prompt).toContain("- inv1");
     expect(prompt).toContain("- inv2");
     expect(prompt).toContain("- inv3");
+  });
+
+  it("shows 'None specified' when invariants are empty", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).toContain("None specified");
+  });
+
+  it("includes Related Modules section when relatedModuleSignatures is provided", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+      relatedModuleSignatures: "module test::helper { public fun do_thing() }",
+    });
+    expect(prompt).toContain("Related Modules");
+    expect(prompt).toContain("module test::helper");
+  });
+
+  it("does NOT include Related Modules section when relatedModuleSignatures is undefined", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).not.toContain("Related Modules");
+  });
+
+  it("contains oracle section with check.ts command", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).toContain("npx tsx src/oracle/check.ts");
+  });
+
+  it("contains 'Verify assumptions' section", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).toContain("Verify assumptions");
+  });
+
+  it("contains output format with vulns.json and findings.json", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).toContain("vulns.json");
+    expect(prompt).toContain("findings.json");
+  });
+
+  // ── Devnet-specific ──────────────────────────────────────────
+
+  it("devnet prompt contains Sui devnet RPC and addresses", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xattacker",
+      adminAddress: "0xadmin",
+      userAddress: "0xuser",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).toContain("Sui devnet RPC");
+    expect(prompt).toContain("0xattacker");
+    expect(prompt).toContain("0xadmin");
+    expect(prompt).toContain("0xuser");
+  });
+
+  // ── Mainnet-specific ─────────────────────────────────────────
+
+  const mainnetInput = {
+    moduleName: "test::pool",
+    moduleSource: "module test::pool { }",
+    protocolDescription: "A DEX pool",
+    invariants: ["k = x * y"],
+    packageId: "0xpkg",
+    rpcUrl: "https://fullnode.mainnet.sui.io:443",
+    network: "mainnet" as const,
+  };
+
+  it("mainnet prompt contains simulateTransaction", () => {
+    const prompt = buildHunterPrompt(mainnetInput);
+    expect(prompt).toContain("simulateTransaction");
+  });
+
+  it("mainnet prompt contains SuiJsonRpcClient", () => {
+    const prompt = buildHunterPrompt(mainnetInput);
+    expect(prompt).toContain("SuiJsonRpcClient");
+  });
+
+  it("mainnet prompt contains dry-run", () => {
+    const prompt = buildHunterPrompt(mainnetInput);
+    expect(prompt).toContain("dry-run");
+  });
+
+  it("mainnet prompt does NOT contain attacker address in environment section", () => {
+    const prompt = buildHunterPrompt(mainnetInput);
+    // Mainnet prompt should not have a devnet "Environment" section with attacker address
+    expect(prompt).not.toContain("Attacker address:");
+  });
+
+  it("mainnet prompt includes the package ID and RPC in target block", () => {
+    const prompt = buildHunterPrompt(mainnetInput);
+    expect(prompt).toContain("0xpkg");
+    expect(prompt).toContain("https://fullnode.mainnet.sui.io:443");
+  });
+
+  it("mainnet prompt includes invariants", () => {
+    const prompt = buildHunterPrompt(mainnetInput);
+    expect(prompt).toContain("- k = x * y");
   });
 });

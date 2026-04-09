@@ -2,6 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { type StatusDisplay, c } from "./display.js";
 
+const MAX_RETRIES = 5;
+const TOOL_OUTPUT_LIMIT = 50_000;
+const LOG_OUTPUT_LIMIT = 5_000;
+
 export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
 export interface AgentOptions {
@@ -156,7 +160,7 @@ export async function runAgent(
     status(turns, totalInputTokens + totalOutputTokens, "thinking...");
 
     let response: Anthropic.Message;
-    const maxRetries = 5;
+    const maxRetries = MAX_RETRIES;
     let lastErr: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
@@ -208,7 +212,7 @@ export async function runAgent(
     // Log full response
     log(`\n## Turn ${turns} (${formatTokens(totalTokens)} total)`);
     for (const block of response.content) {
-      if (block.type === "thinking") log(`\n### Thinking (internal)\n${(block as unknown as { thinking: string }).thinking}\n`);
+      if (block.type === "thinking") log(`\n### Thinking (internal)\n${(block as unknown as Record<string, unknown>).thinking ?? ""}\n`);
       else if (block.type === "text") log(`\n### Response\n${block.text}\n`);
       else if (block.type === "tool_use") log(`\n### Tool: ${(block.input as { command: string }).command}\n`);
     }
@@ -247,7 +251,7 @@ export async function runAgent(
         const output = [result.stdout, result.stderr]
           .filter(Boolean)
           .join("\n")
-          .slice(0, 50_000);
+          .slice(0, TOOL_OUTPUT_LIMIT);
 
         // Log command failures to file only — not as persistent display messages
         // (failed commands are normal agent behavior, not worth surfacing)
@@ -255,7 +259,7 @@ export async function runAgent(
           log(`\n### Command failed (exit ${result.exitCode})\n`);
         }
 
-        log(`\n### Result (exit ${result.exitCode})\n\`\`\`\n${output.slice(0, 5000)}\n\`\`\`\n`);
+        log(`\n### Result (exit ${result.exitCode})\n\`\`\`\n${output.slice(0, LOG_OUTPUT_LIMIT)}\n\`\`\`\n`);
 
         return {
           type: "tool_result" as const,

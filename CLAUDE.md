@@ -9,19 +9,20 @@ ANTHROPIC_API_KEY=<key> npx suixploit scan <target> [options]
 ```
 
 Options:
+
 - `--package-id <id>` — On-chain package ID (required for mainnet)
 - `--network <network>` — `mainnet` (default) or `devnet`
 - `--concurrency <n>` — Max parallel agents (default: 5)
 - `--model <model>` — Model for agents (default: claude-opus-4-6)
 - `--max-turns <n>` — Max turns per hunter agent (default: unlimited)
 - `--include <patterns...>` — Only hunt modules matching these substrings
-- `--output <path>` — Write results to file (default: stdout)
 - `--keep-containers` — Keep Docker containers after devnet runs
 - `--checkpoint-dir <path>` — Override output directory
 - `--protocol <description>` — Protocol description override
 - `--invariants <invariants...>` — Invariants to test against
 
 Examples:
+
 ```bash
 # Mainnet scan (dry-run, no Docker needed)
 npx suixploit scan contracts/deepbookv3-main \
@@ -29,7 +30,7 @@ npx suixploit scan contracts/deepbookv3-main \
 
 # Devnet scan (Docker required)
 npx suixploit scan contracts/examples/easy/capability_leak \
-  --network devnet --output results.json
+  --network devnet
 ```
 
 ## Pipeline
@@ -45,6 +46,7 @@ npx suixploit scan contracts/examples/easy/capability_leak \
 ## Output Structure
 
 Each run creates `.suixploit/<timestamp>/` at the project root:
+
 ```
 .suixploit/
   2026-04-08T22-31-00/
@@ -83,16 +85,31 @@ src/
     semaphore.ts         # concurrency limiter
     tracker.ts           # container cleanup
   hunter/
-    index.ts             # hunter prompt builder (devnet)
-    prompt.ts            # hunter prompt builder (mainnet + shared)
+    index.ts             # re-exports from prompt.ts
+    prompt.ts            # unified hunter prompt builder (both networks)
   ranker/                # module scoring by attack surface
   validator/             # independent finding re-analysis
-  oracle/                # deterministic exploit confirmation (devnet only)
-  devnet/                # local devnet lifecycle (Docker)
+  oracle/                # deterministic exploit confirmation (CLI tool, works on both networks)
 contracts/examples/      # intentionally vulnerable test contracts
 ```
 
+## Protocol Description
+
+Place a `protocol.md` file in your target project root to provide context to hunter agents:
+
+```markdown
+## Description
+Brief description of what the protocol does.
+
+## Invariants
+- Invariant 1: total shares == total deposits
+- Invariant 2: only admin can withdraw reserves
+```
+
+Both sections are optional. Can also be overridden via `--protocol` and `--invariants` CLI flags.
+
 ## Test Contracts
+
 - `easy/capability_leak` — admin cap leaks to any caller
 - `easy/unchecked_arithmetic` — share inflation via donation attack
 - `medium/ownership_escape` — missing ownership check on cancel
@@ -101,10 +118,12 @@ contracts/examples/      # intentionally vulnerable test contracts
 - `hard/otw_abuse` — unprotected mint on shared treasury cap
 
 ## Commands
+
 - `pnpm build` — compile TypeScript
 - `pnpm test` — run tests (vitest)
 
 ## Key Dependencies
+
 - `@anthropic-ai/sdk` — Anthropic API client
 - `@mysten/sui` — Sui TypeScript SDK (v2 — use `SuiJsonRpcClient`, NOT `SuiClient`)
 - `commander` — CLI framework

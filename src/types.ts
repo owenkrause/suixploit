@@ -33,7 +33,7 @@ export interface Finding {
   title: string;
   description: string;
   exploitTransaction: string;
-  oracleResult: OracleResult;
+  oracleResult?: OracleResult;
   iterations: number;
 }
 

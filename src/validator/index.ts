@@ -114,11 +114,11 @@ When you are done, write your verdict to verdict-${finding.id}.json in the curre
     const { stdout } = await exec(`cat verdict-${finding.id}.json`);
     return JSON.parse(stdout) as ValidatorVerdict;
   } catch {
-    logWarn(`[validator:${finding.id}] failed to parse verdict, defaulting to confirmed`);
+    logWarn(`[validator:${finding.id}] failed to parse verdict, defaulting to rejected — manual review required`);
     return {
       id: finding.id,
-      validatorVerdict: "confirmed",
-      validatorNote: `Validator agent completed (${result.stopped}) but did not write a parseable verdict.`,
+      validatorVerdict: "rejected",
+      validatorNote: `Manual review required. Validator agent completed (${result.stopped}) but did not write a parseable verdict.`,
     };
   }
 }
@@ -129,8 +129,8 @@ function mergeVerdicts(findings: Finding[], verdicts: ValidatorVerdict[]): Valid
     const verdict = verdictMap.get(f.id);
     return {
       ...f,
-      validatorVerdict: verdict?.validatorVerdict ?? "confirmed",
-      validatorNote: verdict?.validatorNote ?? "No verdict returned",
+      validatorVerdict: verdict?.validatorVerdict ?? "rejected",
+      validatorNote: verdict?.validatorNote ?? "No verdict returned — manual review required",
       adjustedSeverity: verdict?.adjustedSeverity as ValidatedFinding["adjustedSeverity"],
       impact: verdict?.impact,
       duplicateOf: verdict?.duplicateOf ?? undefined,

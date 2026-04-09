@@ -6,14 +6,15 @@ import { buildScanPaths, generateRunId, hunterWorkspace, hunterScratch, type Sca
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority, extractSignatures } from "../ranker/index.js";
 import { runValidators, filterConfirmed, deduplicateFindings } from "../validator/index.js";
-import { prepareHunterPrompt } from "../hunter/index.js";
-import { buildImage, startContainer, waitForReady, readContextJson, readFindings } from "./docker.js";
+import { buildHunterPrompt } from "../hunter/index.js";
+import { buildImage, startContainer, waitForReady, readContextJson, readFindings, readContainerFile, copyFromContainer } from "./docker.js";
 import { buildSystemPrompt, buildMainnetSystemPrompt, runAgent } from "./agent.js";
-import type { ExecFn } from "./agent.js";
 import { makeDockerExec, makeLocalExec } from "./exec.js";
 import { Semaphore } from "./semaphore.js";
 import { ResourceTracker } from "./tracker.js";
 import { StatusDisplay, logStep, logResult, logDetail, logWarn } from "./display.js";
+
+const DEFAULT_MAINNET_RPC = "https://fullnode.mainnet.sui.io:443";
 
 export interface ScanOptions {
   target: string;
@@ -144,51 +145,51 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       .join("\n\n");
   }
 
-  if (network === "mainnet") {
-    // Mainnet: no Docker, run agents locally
-    logStep(`Hunting ${ctx.hunterTargets.length} module(s) locally (concurrency: ${concurrency})`);
+  try {
+    if (network === "mainnet") {
+      if (!packageId) throw new Error("--package-id is required for mainnet scans");
 
-    const workDir = resolve(target);
-    await Promise.all(
-      ctx.hunterTargets.map(async (mod) => {
-        const release = await sem.acquire();
-        try {
-          const relatedSigs = buildRelatedSignatures(mod);
-          const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId!, display, relatedSigs);
-          if (findings.length > 0) {
-            allFindings.push(...findings);
-            writeFileSync(paths.allRawFindings, JSON.stringify(allFindings, null, 2));
-          }
-        } finally {
-          release();
-        }
-      })
-    );
-    ctx.rawFindings = allFindings;
-    display.done();
-  } else {
-    // Devnet: Docker containers
-    logStep("Building Docker image...");
-    await buildImage(resolve(projectRoot, "Dockerfile"), projectRoot);
+      logStep(`Hunting ${ctx.hunterTargets.length} module(s) locally (concurrency: ${concurrency})`);
 
-    logStep(`Hunting ${ctx.hunterTargets.length} module(s) in Docker (concurrency: ${concurrency})`);
-    const hunterResults = await Promise.all(
-      ctx.hunterTargets.map(async (mod) => {
-        const release = await sem.acquire();
-        try {
-          const relatedSigs = buildRelatedSignatures(mod);
-          const result = await runDevnetHunter(client, tracker, mod, target, model, maxTurns, display, relatedSigs);
-          if (result.findings.length > 0) {
-            allFindings.push(...result.findings);
-            writeFileSync(paths.allRawFindings, JSON.stringify(allFindings, null, 2));
+      const workDir = resolve(target);
+      await Promise.all(
+        ctx.hunterTargets.map(async (mod) => {
+          const release = await sem.acquire();
+          try {
+            const relatedSigs = buildRelatedSignatures(mod);
+            const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId, display, relatedSigs);
+            if (findings.length > 0) {
+              allFindings.push(...findings);
+            }
+          } finally {
+            release();
           }
-          return result;
-        } finally {
-          release();
-        }
-      })
-    );
-    ctx.rawFindings = hunterResults.flatMap((r) => r.findings);
+        })
+      );
+      ctx.rawFindings = allFindings;
+    } else {
+      // Devnet: Docker containers
+      logStep("Building Docker image...");
+      await buildImage(resolve(projectRoot, "Dockerfile"), projectRoot);
+
+      logStep(`Hunting ${ctx.hunterTargets.length} module(s) in Docker (concurrency: ${concurrency})`);
+      await Promise.all(
+        ctx.hunterTargets.map(async (mod) => {
+          const release = await sem.acquire();
+          try {
+            const relatedSigs = buildRelatedSignatures(mod);
+            const findings = await runDevnetHunter(client, tracker, mod, target, paths, model, maxTurns, display, relatedSigs);
+            if (findings.length > 0) {
+              allFindings.push(...findings);
+            }
+          } finally {
+            release();
+          }
+        })
+      );
+      ctx.rawFindings = allFindings;
+    }
+  } finally {
     display.done();
   }
 
@@ -244,6 +245,11 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   return result;
 }
 
+function safeSymlink(target: string, link: string) {
+  try { lstatSync(link); return; } catch { /* doesn't exist */ }
+  symlinkSync(target, link);
+}
+
 async function runMainnetHunter(
   client: Anthropic,
   mod: ModuleInfo,
@@ -255,8 +261,17 @@ async function runMainnetHunter(
   display: StatusDisplay,
   relatedModuleSignatures: string
 ): Promise<Finding[]> {
-  const rpcUrl = "https://fullnode.mainnet.sui.io:443";
-  const hunterPrompt = buildMainnetHunterPrompt(mod, packageId, rpcUrl, relatedModuleSignatures);
+  const rpcUrl = DEFAULT_MAINNET_RPC;
+  const hunterPrompt = buildHunterPrompt({
+    moduleName: mod.name,
+    moduleSource: mod.source,
+    protocolDescription: mod.protocolDescription ?? "No description provided.",
+    invariants: mod.invariants ?? [],
+    packageId,
+    rpcUrl,
+    relatedModuleSignatures,
+    network: "mainnet",
+  });
   const systemPrompt = buildMainnetSystemPrompt(hunterPrompt, { rpcUrl, packageId });
 
   // Create isolated workspace with scratch dir for agent scripts
@@ -264,17 +279,12 @@ async function runMainnetHunter(
   const scratch = hunterScratch(paths, mod.name);
   mkdirSync(scratch, { recursive: true });
 
-  function safeSymlink(target: string, link: string) {
-    try { lstatSync(link); return; } catch { /* doesn't exist */ }
-    symlinkSync(target, link);
-  }
-
   // Symlinks go in scratch/ — agent's cwd
   safeSymlink(resolve(workDir), resolve(scratch, "target"));
   const projectRoot = resolve(import.meta.dirname, "../..");
   safeSymlink(resolve(projectRoot, "node_modules"), resolve(scratch, "node_modules"));
 
-  const result = await runAgent(client, {
+  await runAgent(client, {
     exec: makeLocalExec(scratch),
     systemPrompt,
     model,
@@ -291,12 +301,7 @@ async function runMainnetHunter(
     } catch { /* agent may not have written it */ }
   }
 
-  try {
-    const findingsJson = readFileSync(resolve(workspace, "findings.json"), "utf-8");
-    return JSON.parse(findingsJson) as Finding[];
-  } catch {
-    return [];
-  }
+  return readFindingsFromFile(resolve(workspace, "findings.json"), mod.name);
 }
 
 async function runDevnetHunter(
@@ -304,11 +309,12 @@ async function runDevnetHunter(
   tracker: ResourceTracker,
   mod: ModuleInfo,
   target: string,
+  paths: ScanPaths,
   model: string,
   maxTurns: number | undefined,
   display: StatusDisplay,
   relatedModuleSignatures: string
-): Promise<{ findings: Finding[] }> {
+): Promise<Finding[]> {
   logDetail(`[${mod.name}] starting container`);
 
   const containerId = await startContainer({
@@ -321,233 +327,87 @@ async function runDevnetHunter(
   await waitForReady(containerId);
 
   const context = await readContextJson(containerId);
-  const hunterPrompt = prepareHunterPrompt({
-    module: mod,
-    devnetConfig: {
-      rpcUrl: context.rpcUrl,
-      faucetUrl: context.faucetUrl,
-      port: 9000,
-      faucetPort: 9123,
-      adminAddress: context.adminAddress,
-      attackerAddress: context.attackerAddress,
-      userAddress: context.userAddress,
-      adminKeyPair: context.adminKeyPair ?? "",
-      attackerKeyPair: context.attackerKeyPair ?? "",
-      userKeyPair: context.userKeyPair ?? "",
-    },
+
+  // Derive ports from context URLs instead of hardcoding
+  const rpcPort = parsePort(context.rpcUrl, 9000);
+  const faucetPort = parsePort(context.faucetUrl, 9123);
+
+  const hunterPrompt = buildHunterPrompt({
+    moduleName: mod.name,
+    moduleSource: mod.source,
+    protocolDescription: mod.protocolDescription ?? "No description provided.",
+    invariants: mod.invariants ?? [],
     packageId: context.packageId,
+    rpcUrl: context.rpcUrl,
+    attackerAddress: context.attackerAddress,
+    adminAddress: context.adminAddress,
+    userAddress: context.userAddress,
     relatedModuleSignatures,
+    network: "devnet",
   });
   const systemPrompt = buildSystemPrompt(hunterPrompt, context);
 
-  const result = await runAgent(client, {
+  // Create local workspace for parity with mainnet output structure
+  const workspace = hunterWorkspace(paths, mod.name);
+  const scratch = hunterScratch(paths, mod.name);
+  mkdirSync(scratch, { recursive: true });
+
+  await runAgent(client, {
     exec: makeDockerExec(containerId),
     systemPrompt,
     model,
     maxTurns,
     moduleName: mod.name,
+    logFile: resolve(workspace, "agent.log"),
     display,
   });
 
+  // Copy output files from container to local workspace
   const findingsJson = await readFindings(containerId);
+  if (findingsJson && findingsJson !== "[]") {
+    writeFileSync(resolve(workspace, "findings.json"), findingsJson);
+  }
+  const vulnsJson = await readContainerFile(containerId, "/workspace/vulns.json");
+  if (vulnsJson) {
+    writeFileSync(resolve(workspace, "vulns.json"), vulnsJson);
+  }
+
+  // Copy agent-created scripts from container into scratch/
+  await copyFromContainer(containerId, "/workspace/.", scratch);
+
   try {
-    return { findings: JSON.parse(findingsJson) as Finding[] };
+    const parsed = JSON.parse(findingsJson);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as Finding[];
   } catch {
-    return { findings: [] };
+    return [];
   }
 }
 
-function buildMainnetHunterPrompt(
-  mod: ModuleInfo,
-  packageId: string,
-  rpcUrl: string,
-  relatedModuleSignatures: string
-): string {
-  const invariantList = (mod.invariants ?? []).map((inv) => `- ${inv}`).join("\n");
-
-  const relatedSection = relatedModuleSignatures
-    ? `\n## Related Modules (signatures only — for understanding cross-module interactions)\n\n${relatedModuleSignatures}\n`
-    : "";
-
-  return `You are an expert smart contract security researcher. Your goal is to find EXPLOITABLE vulnerabilities in this live Sui Move contract — real bugs that an unprivileged attacker can trigger to steal funds, corrupt protocol state, or violate invariants.
-
-## Target
-Module: ${mod.name}
-Package ID: ${packageId}
-RPC: ${rpcUrl}
-Protocol description: ${mod.protocolDescription ?? "No description provided."}
-
-Invariants:
-${invariantList || "- None specified"}
-
-## Source
-\`\`\`move
-${mod.source}
-\`\`\`
-${relatedSection}
-## What counts as a real finding
-A vulnerability where an unprivileged external user can cause damage. This includes:
-- Fund theft or value extraction (direct drain, rounding exploits, oracle manipulation, share inflation)
-- Permanent fund locking (putting pools/positions into irrecoverable states)
-- State corruption (breaking accounting so future operations compute wrong values)
-- Invariant violations (minting unbacked shares, creating undercollateralized positions)
-- Liquidation manipulation (avoiding liquidation when underwater, forcing unfair liquidations)
-- Privilege escalation (gaining admin/governance capabilities from an unprivileged starting point)
-- Protocol DoS (making core functions permanently uncallable for all users)
-
-The key test: can an UNPRIVILEGED USER trigger this without admin cooperation?
-
-## What does NOT count — do not report these
-- Admin misconfiguration risks ("admin could set a bad parameter")
-- Governance centralization ("admin has too much power")
-- Missing events, logging, or documentation
-- Theoretical bugs requiring admin key compromise
-- Gas optimizations or code style
-- Design choices that are intentional trade-offs
-
-## Severity calibration
-- Critical: Direct value extraction, permanent fund locking, or protocol insolvency. Any user can trigger unconditionally.
-- High: Significant economic damage, privilege escalation, or breaking core invariants. Any user can trigger.
-- Medium: Economic damage or state corruption under specific but realistic conditions (timing, state alignment, multi-step setup).
-- Low: Limited impact, requires unlikely conditions, or griefing with no economic benefit to attacker.
-
-Focus on Critical and High. If you've only found admin misconfiguration issues, those do NOT belong in findings — log them as failed hypotheses in vulns.json and keep looking for real bugs.
-
-## Methodology
-1. READ the entire module. Understand every function, struct, capability, and type constraint.
-2. MAP trust boundaries: who can call what? What capabilities gate access? Which objects are shared vs owned?
-3. TRACE fund flows: where do coins move? Where do balances, shares, or debt change?
-4. IDENTIFY invariants the code assumes but doesn't enforce — these are your targets.
-5. LOOK for cross-module interactions: does this module trust inputs from other modules without validation?
-6. QUERY mainnet state to understand the contract's current deployment (objects, pools, balances, TVL).
-7. For each potential vulnerability:
-   a. Can an unprivileged user trigger it?
-   b. What's the concrete impact (quantify using real on-chain values)?
-   c. Write an exploit transaction and dry-run it to prove it.
-   d. If the exploit fails, analyze WHY and try a different approach. The best bugs require multiple iterations.
-8. ITERATE aggressively. Don't give up after one failed exploit attempt. Try different parameter values, object IDs, call sequences.
-
-## How to test exploits (dry-run only — nothing executes on-chain)
-
-Use \`simulateTransaction\` to simulate transactions against real mainnet state. This lets you test any exploit scenario without risk.
-
-IMPORTANT: The installed SDK is @mysten/sui v2. Do NOT use \`SuiClient\` — it does not exist in v2. Use \`SuiJsonRpcClient\` from \`@mysten/sui/jsonRpc\`.
-
-### Creating the client:
-\`\`\`typescript
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
-import { Transaction } from "@mysten/sui/transactions";
-
-const client = new SuiJsonRpcClient({ url: "${rpcUrl}", network: "mainnet" });
-const SENDER = "0x0000000000000000000000000000000000000000000000000000000000000000";
-\`\`\`
-
-### Dry-run a moveCall:
-\`\`\`typescript
-const tx = new Transaction();
-tx.setSender(SENDER);
-tx.moveCall({
-  target: "${packageId}::module::function",
-  typeArguments: ["0x2::sui::SUI"], // if generic
-  arguments: [tx.object("0xOBJECT_ID"), tx.pure.u64(1000)],
-});
-
-const result = await client.core.simulateTransaction({
-  transaction: tx,
-  checksEnabled: false, // skip signature/gas checks
-  include: { effects: true, events: true, commandResults: true },
-});
-
-if (result.$kind === "Transaction") {
-  console.log("Success:", result.Transaction.status);
-  console.log("Events:", result.Transaction.events);
-  console.log("Return values:", result.commandResults);
-} else {
-  console.log("Failed:", result.FailedTransaction.effects?.status);
+function readFindingsFromFile(filePath: string, moduleName: string): Finding[] {
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      logWarn(`[${moduleName}] findings.json is not an array, skipping`);
+      return [];
+    }
+    return parsed as Finding[];
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      logWarn(`[${moduleName}] failed to read findings.json: ${String(err)}`);
+    }
+    return [];
+  }
 }
-\`\`\`
 
-### Reading on-chain state:
-\`\`\`typescript
-// Get an object
-const obj = await client.core.getObject({ objectId: "0x...", include: { json: true } });
-console.log(obj);
-
-// List objects owned by an address
-const owned = await client.core.listOwnedObjects({ owner: "0x..." });
-
-// List dynamic fields on a shared object
-const fields = await client.core.listDynamicFields({ parentId: "0x..." });
-\`\`\`
-
-### Useful patterns:
-\`\`\`typescript
-// Read Clock timestamp
-tx.moveCall({ target: "0x2::clock::timestamp_ms", arguments: [tx.object.clock()] });
-
-// Split coins for function arguments
-const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(1000000)]);
-
-// Pure value types
-tx.pure.u64(100)
-tx.pure.u8(1)
-tx.pure.bool(true)
-tx.pure.address("0x...")
-tx.pure.string("hello")
-tx.pure.vector("u8", [1, 2, 3])
-\`\`\`
-
-### Alternative: curl for RPC calls (if SDK issues arise)
-\`\`\`bash
-# Read an object
-curl -s -X POST ${rpcUrl} -H 'Content-Type: application/json' -d '{
-  "jsonrpc":"2.0","id":1,"method":"sui_getObject",
-  "params":["0xOBJECT_ID",{"showContent":true}]
-}' | jq .result.data
-\`\`\`
-
-Save exploit scripts as .mts files and run with \`npx tsx <file>\`.
-
-## Quality over quantity
-
-Your output is evaluated on ACCURACY, not quantity. Every finding goes to a validator agent that will reject weak findings.
-
-Before adding anything to findings.json, ask yourself:
-- Does this exploit actually cause damage from an unprivileged user's position?
-- Would a senior auditor consider this a real vulnerability, or a design observation / admin footgun?
-- If you're unsure, it belongs in vulns.json as a hypothesis, NOT in findings.json.
-
-An empty findings.json with a thorough vulns.json showing deep analysis is a GOOD outcome. Well-written code exists. Inflated findings waste everyone's time.
-
-## Output files — update these as you go
-
-### vulns.json — running vulnerability tracker (your primary output)
-Write this file EARLY and update after each hypothesis you investigate. This is how we measure analysis quality — we want to see every attack vector you considered and why it did or didn't work.
-\`\`\`json
-[{
-  "id": "unique-id",
-  "title": "Short title",
-  "status": "confirmed|failed|untested",
-  "severity": "critical|high|medium|low",
-  "reason": "One line: why it works, or why the exploit attempt failed"
-}]
-\`\`\`
-
-### findings.json — ONLY genuinely exploitable vulnerabilities
-This file should be EMPTY unless you have a working exploit that demonstrates real damage from an unprivileged user. Do NOT pad this with design observations or admin misconfiguration issues.
-\`\`\`json
-[{
-  "id": "unique-id",
-  "module": "${mod.name}",
-  "severity": "critical|high|medium|low",
-  "category": "capability_misuse|shared_object_race|integer_overflow|ownership_violation|hot_potato_misuse|otw_abuse|other",
-  "title": "Short title",
-  "description": "What the bug is and how to exploit it",
-  "exploitTransaction": "// the TS exploit code",
-  "oracleResult": { "signal": "dry_run", "status": "EXPLOIT_CONFIRMED", "dryRunResult": "paste dry-run output" },
-  "iterations": 3
-}]
-\`\`\`
-
-IMPORTANT: Update vulns.json after EVERY hypothesis, even failed ones. A thorough vulns.json with 10 failed hypotheses is more valuable than a findings.json with 3 inflated non-issues.`;
+function parsePort(url: string | undefined, fallback: number): number {
+  if (!url) return fallback;
+  try {
+    const port = new URL(url).port;
+    return port ? Number(port) : fallback;
+  } catch {
+    return fallback;
+  }
 }

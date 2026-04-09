@@ -1,6 +1,15 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { Command } from "commander";
 import { runScan } from "./orchestrator/index.js";
+
+function parsePositiveInt(value: string, name: string): number {
+  const n = parseInt(value, 10);
+  if (Number.isNaN(n) || n <= 0) {
+    throw new Error(`${name} must be a positive integer, got "${value}"`);
+  }
+  return n;
+}
 
 const program = new Command();
 
@@ -27,16 +36,37 @@ program
   .option("--invariants <invariants...>", "Invariants to test against")
   .option("--include <patterns...>", "Only hunt modules whose names contain these strings (all modules still available as cross-module context)")
   .action(async (target: string, options) => {
+    // Validate target exists
+    if (!existsSync(target)) {
+      console.error(`Error: target path does not exist: ${target}`);
+      process.exit(1);
+    }
+
+    // Validate network
+    if (!["devnet", "mainnet"].includes(options.network)) {
+      console.error(`Error: --network must be "devnet" or "mainnet", got "${options.network}"`);
+      process.exit(1);
+    }
+
+    // Validate package-id for mainnet
     if (options.network === "mainnet" && !options.packageId) {
       console.error("Error: --package-id is required for mainnet mode");
       process.exit(1);
     }
+    if (options.packageId && !options.packageId.startsWith("0x")) {
+      console.error(`Error: --package-id must be a hex address starting with 0x, got "${options.packageId}"`);
+      process.exit(1);
+    }
+
+    // Validate numeric options
+    const concurrency = parsePositiveInt(options.concurrency, "--concurrency");
+    const maxTurns = options.maxTurns ? parsePositiveInt(options.maxTurns, "--max-turns") : undefined;
 
     await runScan({
       target,
-      concurrency: parseInt(options.concurrency, 10),
+      concurrency,
       model: options.model,
-      maxTurns: options.maxTurns ? parseInt(options.maxTurns, 10) : undefined,
+      maxTurns,
       keepContainers: options.keepContainers,
       network: options.network as "devnet" | "mainnet",
       packageId: options.packageId,

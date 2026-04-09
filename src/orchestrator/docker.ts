@@ -6,7 +6,7 @@ const execFileAsync = promisify(execFile);
 export async function buildImage(dockerfilePath: string, contextPath: string): Promise<void> {
   console.error("Building suixploit-hunter image...");
   const proc = spawn("docker", ["build", "-t", "suixploit-hunter", "-f", dockerfilePath, contextPath], {
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "ignore", "pipe"],
   });
 
   let stderr = "";
@@ -65,7 +65,11 @@ export async function readContextJson(containerId: string): Promise<Record<strin
   const { stdout } = await execFileAsync("docker", [
     "exec", containerId, "cat", "/workspace/context.json",
   ]);
-  return JSON.parse(stdout);
+  try {
+    return JSON.parse(stdout);
+  } catch (err) {
+    throw new Error(`Failed to parse context.json from container ${containerId.slice(0, 12)}: ${err}\nRaw content: ${stdout.slice(0, 500)}`);
+  }
 }
 
 export async function dockerExec(containerId: string, command: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -84,15 +88,25 @@ export async function dockerExec(containerId: string, command: string): Promise<
   }
 }
 
-export async function readFindings(containerId: string): Promise<string> {
+export async function readContainerFile(containerId: string, path: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("docker", [
-      "exec", containerId, "cat", "/workspace/findings.json",
+      "exec", containerId, "cat", path,
     ]);
     return stdout;
   } catch {
-    return "[]";
+    return null;
   }
+}
+
+export async function readFindings(containerId: string): Promise<string> {
+  return (await readContainerFile(containerId, "/workspace/findings.json")) ?? "[]";
+}
+
+export async function copyFromContainer(containerId: string, containerPath: string, localPath: string): Promise<void> {
+  try {
+    await execFileAsync("docker", ["cp", `${containerId}:${containerPath}`, localPath]);
+  } catch { /* source may not exist */ }
 }
 
 export async function readVerdict(containerId: string, findingId: string): Promise<string> {

@@ -22,11 +22,6 @@ ${finding.description}
 ${finding.exploitTransaction}
 \`\`\`
 
-### Oracle / Dry-Run Result
-\`\`\`json
-${JSON.stringify(finding.oracleResult, null, 2)}
-\`\`\`
-
 ## Other Findings In This Batch
 ${otherFindingsSummary}
 
@@ -40,7 +35,7 @@ You have bash access to the container with all source code at /workspace. Use it
 
 3. **Evaluate severity**: Is the current severity rating accurate given the real-world impact? Adjust if needed.
 
-4. **Write your verdict**: When done, write your verdict to /workspace/verdict-${finding.id}.json:
+4. **Write your verdict**: When done, write your verdict to verdict-${finding.id}.json in the current directory:
 
 \`\`\`json
 {

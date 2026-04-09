@@ -15,7 +15,13 @@ export function checkBalance(
       "AddressOwner" in change.owner
         ? (change.owner as { AddressOwner: string }).AddressOwner
         : null;
-    return ownerAddr === attackerAddress && BigInt(change.amount) > 0n;
+    if (ownerAddr !== attackerAddress) return false;
+    try {
+      return BigInt(change.amount) > 0n;
+    } catch {
+      console.warn(`[oracle:balance] invalid amount "${change.amount}", treating as 0`);
+      return false;
+    }
   });
 
   const gained = attackerGains.length > 0;

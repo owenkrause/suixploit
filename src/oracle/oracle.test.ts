@@ -21,6 +21,18 @@ describe("checkAbort", () => {
     );
     expect(result.status).toBe("NO_EXPLOIT");
   });
+
+  it("returns NO_EXPLOIT when tx fails as expected (should_abort + failure)", () => {
+    // Ensures that a failed tx with should_abort is correctly treated as NO_EXPLOIT,
+    // i.e. the transaction aborted as it should — no exploit.
+    const result = checkAbort(
+      { effects: { status: { status: "failure" } } },
+      "should_abort"
+    );
+    expect(result.status).toBe("NO_EXPLOIT");
+    expect(result.signal).toBe("abort");
+    expect(result.postTxState).toEqual({ txStatus: "failure" });
+  });
 });
 
 describe("checkBalance", () => {
@@ -53,6 +65,44 @@ describe("checkBalance", () => {
         owner: { AddressOwner: "0xother" },
         coinType: "0x2::sui::SUI",
         amount: "1000",
+      },
+    ]);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT for non-integer amount string (BigInt guard)", () => {
+    const result = checkBalance("0xattacker", [
+      {
+        owner: { AddressOwner: "0xattacker" },
+        coinType: "0x2::sui::SUI",
+        amount: "not_a_number",
+      },
+    ]);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT with empty balance changes array", () => {
+    const result = checkBalance("0xattacker", []);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT when owner is ObjectOwner (not AddressOwner)", () => {
+    const result = checkBalance("0xattacker", [
+      {
+        owner: { ObjectOwner: "0xsome_object" },
+        coinType: "0x2::sui::SUI",
+        amount: "1000",
+      },
+    ]);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT when amount is '0' (not positive)", () => {
+    const result = checkBalance("0xattacker", [
+      {
+        owner: { AddressOwner: "0xattacker" },
+        coinType: "0x2::sui::SUI",
+        amount: "0",
       },
     ]);
     expect(result.status).toBe("NO_EXPLOIT");
@@ -91,6 +141,59 @@ describe("checkOwnership", () => {
         type: "mutated",
         objectId: "0xobj1",
         owner: { AddressOwner: "0xother" },
+        sender: "0xattacker",
+      },
+    ]);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT when owner is Shared", () => {
+    const result = checkOwnership("0xattacker", [
+      {
+        type: "mutated",
+        objectId: "0xobj1",
+        owner: { Shared: { initial_shared_version: 1 } },
+        sender: "0xattacker",
+      },
+    ]);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT for deleted objects", () => {
+    const result = checkOwnership("0xattacker", [
+      {
+        type: "deleted",
+        objectId: "0xobj1",
+        owner: { AddressOwner: "0xattacker" },
+        sender: "0xattacker",
+      },
+    ]);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT with empty objectChanges array", () => {
+    const result = checkOwnership("0xattacker", []);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT for wrapped objects", () => {
+    const result = checkOwnership("0xattacker", [
+      {
+        type: "wrapped",
+        objectId: "0xobj1",
+        owner: { AddressOwner: "0xattacker" },
+        sender: "0xattacker",
+      },
+    ]);
+    expect(result.status).toBe("NO_EXPLOIT");
+  });
+
+  it("returns NO_EXPLOIT for published objects", () => {
+    const result = checkOwnership("0xattacker", [
+      {
+        type: "published",
+        objectId: "0xobj1",
+        owner: { AddressOwner: "0xattacker" },
         sender: "0xattacker",
       },
     ]);

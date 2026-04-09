@@ -167,6 +167,8 @@ export function parseRankerResponse(response: string): ModuleScore[] {
   }));
 }
 
+export const HIGH_PRIORITY_SCORE = 3;
+
 export function filterHighPriority(scores: ModuleScore[]): ModuleScore[] {
-  return scores.filter((s) => s.score >= 3);
+  return scores.filter((s) => s.score >= HIGH_PRIORITY_SCORE);
 }

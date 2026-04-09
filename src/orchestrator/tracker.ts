@@ -33,14 +33,12 @@ export class ResourceTracker {
       await this.killAll();
     };
 
-    process.on("SIGINT", async () => {
-      await cleanup();
-      process.exit(130);
-    });
-    process.on("SIGTERM", async () => {
-      await cleanup();
-      process.exit(143);
-    });
+    for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+      process.on(signal, () => {
+        setTimeout(() => process.exit(code), 10_000).unref();
+        cleanup().finally(() => process.exit(code));
+      });
+    }
   }
 
   async killAll(): Promise<void> {
