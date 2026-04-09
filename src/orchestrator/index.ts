@@ -87,10 +87,8 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     }
 
     const highPri = filterHighPriority(ctx.rankerScores);
-    // Match by exact name or by the short name after ::
-    const shortName = (n: string) => n.split("::").pop() ?? n;
     ctx.hunterTargets = highPri.length > 0
-      ? modules.filter((m) => highPri.some((s) => s.module === m.name || shortName(s.module) === shortName(m.name)))
+      ? modules.filter((m) => highPri.some((s) => s.module === m.name))
       : modules;
     console.error(`Ranker selected ${ctx.hunterTargets.length} module(s) for hunting.`);
   }

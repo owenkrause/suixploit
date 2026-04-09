@@ -67,8 +67,8 @@ export async function resolveModules(targetPath: string): Promise<ModuleInfo[]> 
   for (const filePath of moveFiles) {
     const source = await readFile(filePath, "utf-8");
 
-    // Extract module name from source
-    const moduleMatch = source.match(/module\s+([\w:]+)/);
+    // Extract module name from declaration (not comments)
+    const moduleMatch = source.match(/^module\s+([\w:]+)/m);
     const name = moduleMatch ? moduleMatch[1] : filePath.replace(/.*\//, "").replace(".move", "");
 
     modules.push({ name, source, path: filePath, protocolDescription, invariants });
