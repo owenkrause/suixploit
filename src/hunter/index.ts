@@ -7,6 +7,7 @@ export interface HunterInput {
   module: ModuleInfo;
   devnetConfig: DevnetConfig;
   packageId: string;
+  relatedModuleSignatures?: string;
 }
 
 export function prepareHunterPrompt(input: HunterInput): string {
@@ -20,6 +21,7 @@ export function prepareHunterPrompt(input: HunterInput): string {
     userAddress: input.devnetConfig.userAddress,
     rpcUrl: input.devnetConfig.rpcUrl,
     packageId: input.packageId,
+    relatedModuleSignatures: input.relatedModuleSignatures,
   });
 }
 

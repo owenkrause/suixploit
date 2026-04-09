@@ -8,12 +8,17 @@ export interface HunterPromptInput {
   userAddress: string;
   rpcUrl: string;
   packageId: string;
+  relatedModuleSignatures?: string;
 }
 
 export function buildHunterPrompt(input: HunterPromptInput): string {
   const invariantList = input.invariants.map((inv) => `- ${inv}`).join("\n");
 
-  return `You are auditing a Sui Move smart contract module for security vulnerabilities.
+  const relatedSection = input.relatedModuleSignatures
+    ? `\n## Related Modules (signatures only — for understanding cross-module interactions)\n\n${input.relatedModuleSignatures}\n`
+    : "";
+
+  return `You are an expert smart contract security researcher. Your goal is to find EXPLOITABLE vulnerabilities — real bugs that an unprivileged attacker can trigger to steal funds, corrupt protocol state, or violate invariants.
 
 ## Target
 Module: ${input.moduleName}
@@ -21,12 +26,53 @@ Package ID: ${input.packageId}
 Protocol description: ${input.protocolDescription}
 
 Invariants:
-${invariantList}
+${invariantList || "- None specified"}
 
 ## Source
 \`\`\`move
 ${input.moduleSource}
 \`\`\`
+${relatedSection}
+## What counts as a real finding
+A vulnerability where an unprivileged external user can cause damage. This includes:
+- Fund theft or value extraction (direct drain, rounding exploits, oracle manipulation, share inflation)
+- Permanent fund locking (putting pools/positions into irrecoverable states)
+- State corruption (breaking accounting so future operations compute wrong values)
+- Invariant violations (minting unbacked shares, creating undercollateralized positions)
+- Liquidation manipulation (avoiding liquidation when underwater, forcing unfair liquidations)
+- Privilege escalation (gaining admin/governance capabilities from an unprivileged starting point)
+- Protocol DoS (making core functions permanently uncallable for all users)
+
+The key test: can an UNPRIVILEGED USER trigger this without admin cooperation?
+
+## What does NOT count — do not report these
+- Admin misconfiguration risks ("admin could set a bad parameter")
+- Governance centralization ("admin has too much power")
+- Missing events, logging, or documentation
+- Theoretical bugs requiring admin key compromise
+- Gas optimizations or code style
+- Design choices that are intentional trade-offs
+
+## Severity calibration
+- Critical: Direct value extraction, permanent fund locking, or protocol insolvency. Any user can trigger unconditionally.
+- High: Significant economic damage, privilege escalation, or breaking core invariants. Any user can trigger.
+- Medium: Economic damage or state corruption under specific but realistic conditions (timing, state alignment, multi-step setup).
+- Low: Limited impact, requires unlikely conditions, or griefing with no economic benefit to attacker.
+
+Focus on Critical and High. If you've only found admin misconfiguration issues, those do NOT belong in findings — log them as failed hypotheses in vulns.json and keep looking for real bugs.
+
+## Methodology
+1. READ the entire module. Understand every function, struct, capability, and type constraint.
+2. MAP trust boundaries: who can call what? What capabilities gate access? Which objects are shared vs owned?
+3. TRACE fund flows: where do coins move? Where do balances, shares, or debt change?
+4. IDENTIFY invariants the code assumes but doesn't enforce — these are your targets.
+5. LOOK for cross-module interactions: does this module trust inputs from other modules without validation?
+6. For each potential vulnerability:
+   a. Can an unprivileged user trigger it?
+   b. What's the concrete impact (quantify if possible)?
+   c. Write an exploit transaction to prove it.
+   d. If the exploit fails, analyze WHY and try a different approach. The best bugs require multiple iterations.
+7. ITERATE aggressively. Don't give up after one failed exploit attempt.
 
 ## Environment
 - Sui devnet RPC: ${input.rpcUrl}
@@ -53,11 +99,33 @@ Signals:
 
 Returns: EXPLOIT_CONFIRMED or NO_EXPLOIT
 
-## Task
-Find a vulnerability in this module and confirm it with the oracle.
-Write exploit transactions as TS files, run them via dry-run, check with the oracle.
-Iterate until you find something or exhaust your ideas.
-When done, write your findings to findings.json in this format:
+## Quality over quantity
+
+Your output is evaluated on ACCURACY, not quantity. Every finding goes to a validator agent that will reject weak findings.
+
+Before adding anything to findings.json, ask yourself:
+- Does this exploit actually cause damage from an unprivileged user's position?
+- Would a senior auditor consider this a real vulnerability, or a design observation / admin footgun?
+- If you're unsure, it belongs in vulns.json as a hypothesis, NOT in findings.json.
+
+An empty findings.json with a thorough vulns.json showing deep analysis is a GOOD outcome. Well-written code exists. Inflated findings waste everyone's time.
+
+## Output files — update these as you go
+
+### vulns.json — running vulnerability tracker (your primary output)
+Write this file EARLY and update after each hypothesis you investigate. This is how we measure analysis quality — we want to see every attack vector you considered and why it did or didn't work.
+\`\`\`json
+[{
+  "id": "unique-id",
+  "title": "Short title",
+  "status": "confirmed|failed|untested",
+  "severity": "critical|high|medium|low",
+  "reason": "One line: why it works, or why the exploit attempt failed"
+}]
+\`\`\`
+
+### findings.json — ONLY genuinely exploitable vulnerabilities
+This file should be EMPTY unless you have a working exploit that demonstrates real damage from an unprivileged user. Do NOT pad this with design observations or admin misconfiguration issues.
 \`\`\`json
 [{
   "id": "unique-id",
@@ -67,8 +135,10 @@ When done, write your findings to findings.json in this format:
   "title": "Short title",
   "description": "What the bug is and how to exploit it",
   "exploitTransaction": "// the TS exploit code",
-  "oracleResult": { /* paste oracle output */ },
+  "oracleResult": { "signal": "...", "status": "EXPLOIT_CONFIRMED" },
   "iterations": 3
 }]
-\`\`\``;
+\`\`\`
+
+IMPORTANT: Update vulns.json after EVERY hypothesis, even failed ones. A thorough vulns.json with 10 failed hypotheses is more valuable than a findings.json with 3 inflated non-issues.`;
 }

@@ -12,6 +12,7 @@ export interface AgentOptions {
   moduleName: string;
   logFile?: string;
   display?: StatusDisplay;
+  thinkingBudget?: number;
 }
 
 export interface AgentResult {
@@ -105,7 +106,7 @@ export async function runAgent(
   client: Anthropic,
   options: AgentOptions
 ): Promise<AgentResult> {
-  const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display } = options;
+  const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display, thinkingBudget = 16000 } = options;
   const tool = buildToolDefinition();
 
   // Initialize log file with system prompt
@@ -158,6 +159,9 @@ export async function runAgent(
       response = await client.messages.create({
         model,
         max_tokens: 16384,
+        ...(thinkingBudget > 0 ? {
+          thinking: { type: "enabled" as const, budget_tokens: thinkingBudget },
+        } : {}),
         system: systemPrompt,
         tools: [tool],
         messages,
@@ -186,8 +190,9 @@ export async function runAgent(
     // Log full response
     log(`\n## Turn ${turns} (${formatTokens(totalTokens)} total)`);
     for (const block of response.content) {
-      if (block.type === "text") log(`\n### Thinking\n${block.text}\n`);
-      if (block.type === "tool_use") log(`\n### Tool: ${(block.input as { command: string }).command}\n`);
+      if (block.type === "thinking") log(`\n### Thinking (internal)\n${(block as unknown as { thinking: string }).thinking}\n`);
+      else if (block.type === "text") log(`\n### Response\n${block.text}\n`);
+      else if (block.type === "tool_use") log(`\n### Tool: ${(block.input as { command: string }).command}\n`);
     }
 
     if (response.stop_reason !== "tool_use") {

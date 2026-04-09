@@ -5,7 +5,7 @@ import type { ModuleInfo, ModuleScore } from "../types.js";
  * struct definitions, public/entry function signatures, friend declarations, use statements.
  * Strips function bodies to keep the ranker prompt small.
  */
-function extractSignatures(source: string): string {
+export function extractSignatures(source: string): string {
   const lines = source.split("\n");
   const result: string[] = [];
   let braceDepth = 0;
