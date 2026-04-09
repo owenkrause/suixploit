@@ -63,6 +63,22 @@ export interface ModuleInfo {
   invariants?: string[];
 }
 
+export interface ScanMeta {
+  version: number;
+  target: string;
+  model: string;
+  network: "devnet" | "mainnet";
+  concurrency: number;
+  maxTurns: number | null;
+  packageId: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  modulesResolved: number;
+  modulesHunted: number;
+  findingsRaw: number;
+  findingsValidated: number;
+}
+
 export interface DevnetConfig {
   rpcUrl: string;
   faucetUrl: string;

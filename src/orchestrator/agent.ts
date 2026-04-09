@@ -59,10 +59,10 @@ The Sui devnet is already running. The contract is already deployed. Accounts ar
 - Admin address: ${context.adminAddress}
 - User address: ${context.userAddress}
 
-You have a \`bash\` tool to run shell commands. The project source is at /workspace.
-Working directory is /workspace. Write your exploit files there.
+You have a \`bash\` tool to run shell commands. The contract source is at ./target/ (symlink to /workspace).
+Write your exploit scripts in the current directory.
 
-When you are done, write your findings to /workspace/findings.json.`;
+When you are done, write your findings to findings.json in the current directory.`;
 }
 
 export function buildMainnetSystemPrompt(
@@ -78,9 +78,10 @@ You are analyzing a live contract on Sui mainnet. All transactions are simulated
 - RPC URL: ${context.rpcUrl}
 - Package ID: ${context.packageId}
 
-You have a \`bash\` tool to run shell commands. The project source is in the current directory.
+You have a \`bash\` tool to run shell commands. The contract source is at ./target/ (symlink to the project).
 The @mysten/sui v2 TypeScript SDK is available. Use \`npx tsx <file>.mts\` to run TypeScript files.
 IMPORTANT: Use \`SuiJsonRpcClient\` from \`@mysten/sui/jsonRpc\` — NOT \`SuiClient\` (which does not exist in v2).
+Write your exploit scripts in the current directory.
 
 When you are done, write your findings to findings.json in the current directory.`;
 }

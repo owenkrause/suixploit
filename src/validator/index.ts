@@ -1,21 +1,23 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, symlinkSync, lstatSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Finding, ModuleInfo, ValidatedFinding } from "../types.js";
+import type { Finding, ValidatedFinding } from "../types.js";
 import { buildValidatorAgentPrompt, buildOtherFindingsSummary } from "./prompt.js";
 import { runAgent } from "../orchestrator/agent.js";
-import type { ExecFn } from "../orchestrator/agent.js";
+import { makeLocalExec } from "../orchestrator/exec.js";
 import { Semaphore } from "../orchestrator/semaphore.js";
-import { logDetail, logResult, logStep, logWarn } from "../orchestrator/display.js";
+import { StatusDisplay, logDetail, logStep, logWarn } from "../orchestrator/display.js";
+import { type ScanPaths, validatorScratch, validatorVerdict, validatorLog } from "../orchestrator/paths.js";
 
 export interface ValidatorOptions {
   client: Anthropic;
   findings: Finding[];
-  exec: ExecFn;
   model: string;
   concurrency: number;
   maxTurns?: number;
-  checkpointDir?: string;
+  scanPaths?: ScanPaths;
+  targetDir: string;
+  display?: StatusDisplay;
 }
 
 interface ValidatorVerdict {
@@ -27,21 +29,40 @@ interface ValidatorVerdict {
   duplicateOf?: string | null;
 }
 
+function safeSymlink(target: string, link: string) {
+  try { lstatSync(link); return; } catch { /* doesn't exist */ }
+  symlinkSync(target, link);
+}
+
 export async function runValidators(options: ValidatorOptions): Promise<ValidatedFinding[]> {
-  const { client, findings, exec, model, concurrency, maxTurns = 30, checkpointDir } = options;
+  const { client, findings, model, concurrency, maxTurns = 30, scanPaths, targetDir } = options;
 
   if (findings.length === 0) return [];
 
   const sem = new Semaphore(concurrency);
+  const display = options.display ?? new StatusDisplay();
+  const projectRoot = resolve(import.meta.dirname, "../..");
 
   const verdicts = await Promise.all(
     findings.map(async (finding) => {
       const release = await sem.acquire();
       try {
-        const verdict = await runValidatorForFinding(client, finding, findings, exec, model, maxTurns, checkpointDir);
-        if (checkpointDir) {
-          const path = resolve(checkpointDir, `verdict-${finding.id}.json`);
-          writeFileSync(path, JSON.stringify(verdict, null, 2));
+        // Create validator workspace with scratch dir
+        let scratch: string | undefined;
+        let logFile: string | undefined;
+        if (scanPaths) {
+          scratch = validatorScratch(scanPaths, finding.module, finding.id);
+          mkdirSync(scratch, { recursive: true });
+          safeSymlink(resolve(targetDir), resolve(scratch, "target"));
+          safeSymlink(resolve(projectRoot, "node_modules"), resolve(scratch, "node_modules"));
+          logFile = validatorLog(scanPaths, finding.module, finding.id);
+        }
+
+        const exec = makeLocalExec(scratch ?? targetDir);
+        const verdict = await runValidatorForFinding(client, finding, findings, exec, model, maxTurns, logFile, display);
+
+        if (scanPaths) {
+          writeFileSync(validatorVerdict(scanPaths, finding.module, finding.id), JSON.stringify(verdict, null, 2));
           logDetail(`[validator:${finding.id}] verdict saved`);
         }
         return verdict;
@@ -51,6 +72,8 @@ export async function runValidators(options: ValidatorOptions): Promise<Validate
     })
   );
 
+  if (!options.display) display.done();
+
   return mergeVerdicts(findings, verdicts);
 }
 
@@ -58,10 +81,11 @@ async function runValidatorForFinding(
   client: Anthropic,
   finding: Finding,
   allFindings: Finding[],
-  exec: ExecFn,
+  exec: ReturnType<typeof makeLocalExec>,
   model: string,
   maxTurns: number,
-  checkpointDir?: string
+  logFile?: string,
+  display?: StatusDisplay
 ): Promise<ValidatorVerdict> {
   const otherSummary = buildOtherFindingsSummary(allFindings, finding.id);
   const prompt = buildValidatorAgentPrompt(finding, otherSummary);
@@ -70,12 +94,10 @@ async function runValidatorForFinding(
 
 ## Environment
 
-You have a \`bash\` tool to run shell commands. Source code is in the current directory.
+You have a \`bash\` tool to run shell commands. The contract source is at ./target/ (symlink to the project).
 Use it to read .move files, grep for functions, trace code paths.
 
 When you are done, write your verdict to verdict-${finding.id}.json in the current directory.`;
-
-  const logFile = checkpointDir ? resolve(checkpointDir, `validator-${finding.id}.log`) : undefined;
 
   const result = await runAgent(client, {
     exec,
@@ -84,9 +106,10 @@ When you are done, write your verdict to verdict-${finding.id}.json in the curre
     maxTurns,
     moduleName: `validator:${finding.id}`,
     logFile,
+    display,
   });
 
-  // Read verdict from local file
+  // Read verdict from agent's working directory
   try {
     const { stdout } = await exec(`cat verdict-${finding.id}.json`);
     return JSON.parse(stdout) as ValidatorVerdict;

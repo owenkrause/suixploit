@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { resolve } from "node:path";
-import { mkdirSync, writeFileSync, readFileSync, symlinkSync, lstatSync } from "node:fs";
-import type { ModuleInfo, Finding, ValidatedFinding, ScanResult } from "../types.js";
+import { mkdirSync, writeFileSync, readFileSync, symlinkSync, lstatSync, renameSync } from "node:fs";
+import type { ModuleInfo, Finding, ValidatedFinding, ScanResult, ScanMeta } from "../types.js";
+import { buildScanPaths, generateRunId, hunterWorkspace, hunterScratch, type ScanPaths } from "./paths.js";
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority, extractSignatures } from "../ranker/index.js";
 import { runValidators, filterConfirmed, deduplicateFindings } from "../validator/index.js";
@@ -31,14 +32,31 @@ export interface ScanOptions {
 export async function runScan(options: ScanOptions): Promise<ScanResult> {
   const { target, concurrency, model, maxTurns, keepContainers, network, packageId } = options;
 
-  // Set up checkpoint directory
-  const checkpointDir = options.checkpointDir ?? resolve(target, ".suixploit");
-  mkdirSync(checkpointDir, { recursive: true });
-  const checkpoint = (name: string, data: unknown) => {
-    const path = resolve(checkpointDir, name);
-    writeFileSync(path, JSON.stringify(data, null, 2));
-    logDetail(`checkpoint: ${path}`);
+  // Set up checkpoint directory structure: .suixploit/<timestamp>/ at project root
+  const projectRoot = resolve(import.meta.dirname, "../..");
+  const checkpointDir = options.checkpointDir ?? resolve(projectRoot, ".suixploit", generateRunId());
+  const paths = buildScanPaths(checkpointDir);
+  for (const dir of [paths.root, paths.findingsDir, paths.huntersDir, paths.validatorsDir]) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  // Write initial scan metadata
+  const scanMeta: ScanMeta = {
+    version: 1,
+    target,
+    model,
+    network,
+    concurrency,
+    maxTurns: maxTurns ?? null,
+    packageId: packageId ?? null,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    modulesResolved: 0,
+    modulesHunted: 0,
+    findingsRaw: 0,
+    findingsValidated: 0,
   };
+  writeFileSync(paths.scanMeta, JSON.stringify(scanMeta, null, 2));
 
   const tracker = new ResourceTracker();
   tracker.registerCleanupHandlers(keepContainers);
@@ -52,6 +70,8 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     throw new Error("No Move modules found in target path.");
   }
   logDetail(`found ${modules.length} module(s)`);
+  scanMeta.modulesResolved = modules.length;
+  writeFileSync(paths.scanMeta, JSON.stringify(scanMeta, null, 2));
 
   // Filter modules if --include is specified (keep full list for cross-module context)
   let candidates = modules;
@@ -134,11 +154,10 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
         const release = await sem.acquire();
         try {
           const relatedSigs = buildRelatedSignatures(mod);
-          const findings = await runMainnetHunter(client, mod, workDir, checkpointDir, model, maxTurns, packageId!, display, relatedSigs);
+          const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId!, display, relatedSigs);
           if (findings.length > 0) {
-            checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, findings);
             allFindings.push(...findings);
-            checkpoint("all-findings.json", allFindings);
+            writeFileSync(paths.allRawFindings, JSON.stringify(allFindings, null, 2));
           }
         } finally {
           release();
@@ -150,7 +169,6 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   } else {
     // Devnet: Docker containers
     logStep("Building Docker image...");
-    const projectRoot = resolve(import.meta.dirname, "../..");
     await buildImage(resolve(projectRoot, "Dockerfile"), projectRoot);
 
     logStep(`Hunting ${ctx.hunterTargets.length} module(s) in Docker (concurrency: ${concurrency})`);
@@ -161,9 +179,8 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
           const relatedSigs = buildRelatedSignatures(mod);
           const result = await runDevnetHunter(client, tracker, mod, target, model, maxTurns, display, relatedSigs);
           if (result.findings.length > 0) {
-            checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, result.findings);
             allFindings.push(...result.findings);
-            checkpoint("all-findings.json", allFindings);
+            writeFileSync(paths.allRawFindings, JSON.stringify(allFindings, null, 2));
           }
           return result;
         } finally {
@@ -175,6 +192,14 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     display.done();
   }
 
+  // Assign global sequential IDs (vuln-001, vuln-002, ...)
+  for (let i = 0; i < allFindings.length; i++) {
+    allFindings[i].id = `vuln-${String(i + 1).padStart(3, "0")}`;
+  }
+  if (allFindings.length > 0) {
+    writeFileSync(paths.allRawFindings, JSON.stringify(allFindings, null, 2));
+  }
+
   logResult(`Collected ${ctx.rawFindings.length} raw finding(s)`);
 
   // Step 6: Validate (always local — just reads source files and reasons)
@@ -183,14 +208,14 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     const validated = await runValidators({
       client,
       findings: ctx.rawFindings,
-      exec: makeLocalExec(resolve(target)),
       model,
       concurrency,
-      checkpointDir,
+      scanPaths: paths,
+      targetDir: resolve(target),
     });
     const confirmed = filterConfirmed(validated);
     ctx.findings = await deduplicateFindings(client, confirmed, model);
-    checkpoint("validated-findings.json", ctx.findings);
+    writeFileSync(paths.validatedFindings, JSON.stringify(ctx.findings, null, 2));
     logResult(`${ctx.findings.length} finding(s) confirmed after validation + dedup`);
   } else {
     ctx.findings = [];
@@ -202,6 +227,13 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     await tracker.killAll();
   }
 
+  // Update scan metadata with final results
+  scanMeta.completedAt = new Date().toISOString();
+  scanMeta.modulesHunted = ctx.hunterTargets.length;
+  scanMeta.findingsRaw = ctx.rawFindings.length;
+  scanMeta.findingsValidated = ctx.findings.length;
+  writeFileSync(paths.scanMeta, JSON.stringify(scanMeta, null, 2));
+
   return buildScanResult(ctx);
 }
 
@@ -209,7 +241,7 @@ async function runMainnetHunter(
   client: Anthropic,
   mod: ModuleInfo,
   workDir: string,
-  checkpointDir: string,
+  paths: ScanPaths,
   model: string,
   maxTurns: number | undefined,
   packageId: string,
@@ -220,25 +252,23 @@ async function runMainnetHunter(
   const hunterPrompt = buildMainnetHunterPrompt(mod, packageId, rpcUrl, relatedModuleSignatures);
   const systemPrompt = buildMainnetSystemPrompt(hunterPrompt, { rpcUrl, packageId });
 
-  // Create isolated workspace per hunter so scripts don't pollute source dir
-  const safeName = mod.name.replace(/::/g, "-");
-  const workspace = resolve(checkpointDir, `workspace-${safeName}`);
-  mkdirSync(workspace, { recursive: true });
+  // Create isolated workspace with scratch dir for agent scripts
+  const workspace = hunterWorkspace(paths, mod.name);
+  const scratch = hunterScratch(paths, mod.name);
+  mkdirSync(scratch, { recursive: true });
 
   function safeSymlink(target: string, link: string) {
     try { lstatSync(link); return; } catch { /* doesn't exist */ }
     symlinkSync(target, link);
   }
 
-  // Symlink entire target dir so agent can read .move files at any depth
-  safeSymlink(resolve(workDir), resolve(workspace, "target"));
-
-  // Symlink node_modules so agent can run npx tsx
+  // Symlinks go in scratch/ — agent's cwd
+  safeSymlink(resolve(workDir), resolve(scratch, "target"));
   const projectRoot = resolve(import.meta.dirname, "../..");
-  safeSymlink(resolve(projectRoot, "node_modules"), resolve(workspace, "node_modules"));
+  safeSymlink(resolve(projectRoot, "node_modules"), resolve(scratch, "node_modules"));
 
   const result = await runAgent(client, {
-    exec: makeLocalExec(workspace),
+    exec: makeLocalExec(scratch),
     systemPrompt,
     model,
     maxTurns,
@@ -247,11 +277,12 @@ async function runMainnetHunter(
     display,
   });
 
-  // Copy vulns tracker to checkpoint dir if it exists
-  try {
-    const vulnsJson = readFileSync(resolve(workspace, "vulns.json"), "utf-8");
-    writeFileSync(resolve(checkpointDir, `vulns-${safeName}.json`), vulnsJson);
-  } catch { /* no vulns.json — agent may not have written it */ }
+  // Lift output files from scratch/ to workspace root
+  for (const file of ["findings.json", "vulns.json"]) {
+    try {
+      renameSync(resolve(scratch, file), resolve(workspace, file));
+    } catch { /* agent may not have written it */ }
+  }
 
   try {
     const findingsJson = readFileSync(resolve(workspace, "findings.json"), "utf-8");

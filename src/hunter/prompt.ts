@@ -74,6 +74,18 @@ Focus on Critical and High. If you've only found admin misconfiguration issues, 
    d. If the exploit fails, analyze WHY and try a different approach. The best bugs require multiple iterations.
 7. ITERATE aggressively. Don't give up after one failed exploit attempt.
 
+## CRITICAL: Verify assumptions — don't assume safety checks exist
+
+When rejecting a vulnerability hypothesis, you MUST cite the specific code that prevents the exploit. Common reasoning failures:
+
+- ❌ "vault.remove_position would abort if the position was never inserted" — Did you READ remove_position? What does it actually check?
+- ❌ "the function properly validates the input" — WHICH validation? What line? What does it check?
+- ❌ "this would fail because X is checked" — WHERE is it checked? Show the line number.
+
+**The rule:** If your rejection reason contains "would abort," "properly validates," "correctly checks," "cannot happen," or "impossible" — you MUST back it up with a specific function name and line number from the source code. If you can't find the check, THE CHECK MIGHT NOT EXIST, and that's your vulnerability.
+
+The most dangerous false negative is assuming a callee function has safety checks that it doesn't. Always trace into the called function and read what it actually does. A function named \`remove_position\` might happily remove a position that was never added. A function named \`validate_amount\` might only check for zero, not for overflow.
+
 ## Environment
 - Sui devnet RPC: ${input.rpcUrl}
 - Attacker address: ${input.attackerAddress}
@@ -120,7 +132,7 @@ Write this file EARLY and update after each hypothesis you investigate. This is 
   "title": "Short title",
   "status": "confirmed|failed|untested",
   "severity": "critical|high|medium|low",
-  "reason": "One line: why it works, or why the exploit attempt failed"
+  "reason": "Why it works, or why the exploit failed — if failed, MUST cite the specific function+line that prevents it (e.g., 'remove_position:L45 aborts with EPositionNotFound when key missing'). Never write 'would abort' or 'properly validates' without citing the exact check."
 }]
 \`\`\`
 
