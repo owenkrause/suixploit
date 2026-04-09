@@ -79,8 +79,8 @@ You are analyzing a live contract on Sui mainnet. All transactions are simulated
 - Package ID: ${context.packageId}
 
 You have a \`bash\` tool to run shell commands. The project source is in the current directory.
-The @mysten/sui TypeScript SDK and Sui CLI are available.
-Use \`npx tsx\` to run TypeScript files.
+The @mysten/sui v2 TypeScript SDK is available. Use \`npx tsx <file>.mts\` to run TypeScript files.
+IMPORTANT: Use \`SuiJsonRpcClient\` from \`@mysten/sui/jsonRpc\` — NOT \`SuiClient\` (which does not exist in v2).
 
 When you are done, write your findings to findings.json in the current directory.`;
 }

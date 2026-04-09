@@ -391,39 +391,84 @@ Focus on Critical and High. If you've only found admin misconfiguration issues, 
 
 ## How to test exploits (dry-run only — nothing executes on-chain)
 
-Use \`devInspectTransactionBlock\` to simulate transactions against real mainnet state. This lets you test any exploit scenario without risk.
+Use \`simulateTransaction\` to simulate transactions against real mainnet state. This lets you test any exploit scenario without risk.
 
-### Using the TypeScript SDK:
+IMPORTANT: The installed SDK is @mysten/sui v2. Do NOT use \`SuiClient\` — it does not exist in v2. Use \`SuiJsonRpcClient\` from \`@mysten/sui/jsonRpc\`.
+
+### Creating the client:
 \`\`\`typescript
-import { SuiClient } from "@mysten/sui/client";
+import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 
-const client = new SuiClient({ url: "${rpcUrl}" });
+const client = new SuiJsonRpcClient({ url: "${rpcUrl}", network: "mainnet" });
+const SENDER = "0x0000000000000000000000000000000000000000000000000000000000000000";
+\`\`\`
 
-// Build your exploit transaction
+### Dry-run a moveCall:
+\`\`\`typescript
 const tx = new Transaction();
+tx.setSender(SENDER);
 tx.moveCall({
   target: "${packageId}::module::function",
-  arguments: [/* ... */],
+  typeArguments: ["0x2::sui::SUI"], // if generic
+  arguments: [tx.object("0xOBJECT_ID"), tx.pure.u64(1000)],
 });
 
-// Dry-run: simulate against real mainnet state, no signature needed
-const result = await client.devInspectTransactionBlock({
-  transactionBlock: tx,
-  sender: "0x0000000000000000000000000000000000000000000000000000000000000000",
+const result = await client.core.simulateTransaction({
+  transaction: tx,
+  checksEnabled: false, // skip signature/gas checks
+  include: { effects: true, events: true, commandResults: true },
 });
 
-console.log("Status:", result.effects.status);
-console.log("Events:", result.events);
+if (result.$kind === "Transaction") {
+  console.log("Success:", result.Transaction.status);
+  console.log("Events:", result.Transaction.events);
+  console.log("Return values:", result.commandResults);
+} else {
+  console.log("Failed:", result.FailedTransaction.effects?.status);
+}
 \`\`\`
 
 ### Reading on-chain state:
 \`\`\`typescript
-const obj = await client.getObject({ id: "0x...", options: { showContent: true } });
-const events = await client.queryEvents({ query: { MoveModule: { package: "${packageId}", module: "${mod.name}" } } });
+// Get an object
+const obj = await client.core.getObject({ objectId: "0x...", include: { json: true } });
+console.log(obj);
+
+// List objects owned by an address
+const owned = await client.core.listOwnedObjects({ owner: "0x..." });
+
+// List dynamic fields on a shared object
+const fields = await client.core.listDynamicFields({ parentId: "0x..." });
 \`\`\`
 
-Save exploit scripts as .ts files and run with \`npx tsx <file>\`.
+### Useful patterns:
+\`\`\`typescript
+// Read Clock timestamp
+tx.moveCall({ target: "0x2::clock::timestamp_ms", arguments: [tx.object.clock()] });
+
+// Split coins for function arguments
+const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(1000000)]);
+
+// Pure value types
+tx.pure.u64(100)
+tx.pure.u8(1)
+tx.pure.bool(true)
+tx.pure.address("0x...")
+tx.pure.string("hello")
+tx.pure.vector("u8", [1, 2, 3])
+\`\`\`
+
+### Alternative: curl for RPC calls (if SDK issues arise)
+\`\`\`bash
+# Read an object
+curl -s -X POST ${rpcUrl} -H 'Content-Type: application/json' -d '{
+  "jsonrpc":"2.0","id":1,"method":"sui_getObject",
+  "params":["0xOBJECT_ID",{"showContent":true}]
+}' | jq .result.data
+\`\`\`
+
+Save exploit scripts as .mts files and run with \`npx tsx <file>\`.
 
 ## Quality over quantity
 
