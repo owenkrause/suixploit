@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { resolve } from "node:path";
-import { mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, symlinkSync, lstatSync } from "node:fs";
 import type { ModuleInfo, Finding, ValidatedFinding, ScanResult } from "../types.js";
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
 import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "../ranker/index.js";
@@ -70,7 +70,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     const rankerPrompt = buildRankerPrompt(modules);
     const rankerResponse = await client.messages.create({
       model,
-      max_tokens: 4096,
+      max_tokens: 16384,
       messages: [{ role: "user", content: rankerPrompt }],
     });
     const rankerText = rankerResponse.content
@@ -86,8 +86,11 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       console.error(`  ${marker} [${s.score}/5] ${s.module}`);
     }
 
-    ctx.hunterTargets = filterHighPriority(ctx.rankerScores).length > 0
-      ? modules.filter((m) => filterHighPriority(ctx.rankerScores).some((s) => s.module === m.name))
+    const highPri = filterHighPriority(ctx.rankerScores);
+    // Match by exact name or by the short name after ::
+    const shortName = (n: string) => n.split("::").pop() ?? n;
+    ctx.hunterTargets = highPri.length > 0
+      ? modules.filter((m) => highPri.some((s) => s.module === m.name || shortName(s.module) === shortName(m.name)))
       : modules;
     console.error(`Ranker selected ${ctx.hunterTargets.length} module(s) for hunting.`);
   }
@@ -191,18 +194,17 @@ async function runMainnetHunter(
   const workspace = resolve(checkpointDir, `workspace-${safeName}`);
   mkdirSync(workspace, { recursive: true });
 
-  // Symlink source dir so agent can read .move files
-  const srcLink = resolve(workspace, "sources");
-  if (!existsSync(srcLink)) {
-    symlinkSync(resolve(workDir, "sources"), srcLink);
+  function safeSymlink(target: string, link: string) {
+    try { lstatSync(link); return; } catch { /* doesn't exist */ }
+    symlinkSync(target, link);
   }
+
+  // Symlink entire target dir so agent can read .move files at any depth
+  safeSymlink(resolve(workDir), resolve(workspace, "target"));
 
   // Symlink node_modules so agent can run npx tsx
   const projectRoot = resolve(import.meta.dirname, "../..");
-  const nmLink = resolve(workspace, "node_modules");
-  if (!existsSync(nmLink)) {
-    symlinkSync(resolve(projectRoot, "node_modules"), nmLink);
-  }
+  safeSymlink(resolve(projectRoot, "node_modules"), resolve(workspace, "node_modules"));
 
   console.error(`[${mod.name}] Running locally (mainnet dry-run)...`);
   const result = await runAgent(client, {
