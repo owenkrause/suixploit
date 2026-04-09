@@ -12,7 +12,7 @@ import type { ExecFn } from "./agent.js";
 import { makeDockerExec, makeLocalExec } from "./exec.js";
 import { Semaphore } from "./semaphore.js";
 import { ResourceTracker } from "./tracker.js";
-import { StatusDisplay } from "./display.js";
+import { StatusDisplay, logStep, logResult, logDetail, logWarn } from "./display.js";
 
 export interface ScanOptions {
   target: string;
@@ -25,6 +25,7 @@ export interface ScanOptions {
   protocol?: string;
   invariants?: string[];
   checkpointDir?: string;
+  include?: string[];
 }
 
 export async function runScan(options: ScanOptions): Promise<ScanResult> {
@@ -36,7 +37,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   const checkpoint = (name: string, data: unknown) => {
     const path = resolve(checkpointDir, name);
     writeFileSync(path, JSON.stringify(data, null, 2));
-    console.error(`Checkpoint saved: ${path}`);
+    logDetail(`checkpoint: ${path}`);
   };
 
   const tracker = new ResourceTracker();
@@ -45,16 +46,28 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   const client = new Anthropic();
 
   // Step 1: Resolve modules
-  console.error(`Resolving modules from ${target}...`);
+  logStep(`Resolving modules from ${target}`);
   const modules = await resolveModules(resolve(target));
   if (modules.length === 0) {
     throw new Error("No Move modules found in target path.");
   }
-  console.error(`Found ${modules.length} module(s).`);
+  logDetail(`found ${modules.length} module(s)`);
+
+  // Filter modules if --include is specified (keep full list for cross-module context)
+  let candidates = modules;
+  if (options.include && options.include.length > 0) {
+    candidates = modules.filter((m) =>
+      options.include!.some((pattern) => m.name.includes(pattern))
+    );
+    logDetail(`filtered to ${candidates.length} candidate(s) matching: ${options.include.join(", ")}`);
+    if (candidates.length === 0) {
+      throw new Error(`No modules match --include patterns: ${options.include.join(", ")}`);
+    }
+  }
 
   // Apply overrides
   if (options.protocol || options.invariants) {
-    for (const mod of modules) {
+    for (const mod of candidates) {
       if (options.protocol) mod.protocolDescription = options.protocol;
       if (options.invariants) mod.invariants = options.invariants;
     }
@@ -63,12 +76,12 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   const ctx = buildPipelineContext(target, modules);
 
   // Step 2: Rank (if needed)
-  if (shouldSkipRanker(modules)) {
-    console.error(`Skipping ranker (${modules.length} modules <= 3). Hunting all.`);
-    ctx.hunterTargets = modules;
+  if (shouldSkipRanker(candidates)) {
+    logStep(`Skipping ranker (${candidates.length} modules ≤ 3), hunting all`);
+    ctx.hunterTargets = candidates;
   } else {
-    console.error("Running ranker...");
-    const rankerPrompt = buildRankerPrompt(modules);
+    logStep("Running ranker...");
+    const rankerPrompt = buildRankerPrompt(candidates);
     const rankerResponse = await client.messages.create({
       model,
       max_tokens: 16384,
@@ -80,18 +93,21 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       .join("");
     ctx.rankerScores = parseRankerResponse(rankerText);
 
-    // Log all scores sorted by rank
-    const sorted = [...ctx.rankerScores].sort((a, b) => b.score - a.score);
-    for (const s of sorted) {
-      const marker = s.score >= 3 ? ">>>" : "   ";
-      console.error(`  ${marker} [${s.score}/5] ${s.module}`);
-    }
-
     const highPri = filterHighPriority(ctx.rankerScores);
     ctx.hunterTargets = highPri.length > 0
-      ? modules.filter((m) => highPri.some((s) => s.module === m.name))
-      : modules;
-    console.error(`Ranker selected ${ctx.hunterTargets.length} module(s) for hunting.`);
+      ? candidates.filter((m) => highPri.some((s) => s.module === m.name))
+      : candidates;
+
+    // Compact ranker summary
+    const selected = [...ctx.rankerScores]
+      .filter((s) => s.score >= 3)
+      .sort((a, b) => b.score - a.score);
+    const skipped = ctx.rankerScores.length - selected.length;
+    for (const s of selected) {
+      logDetail(`[${s.score}/5] ${s.module}`);
+    }
+    if (skipped > 0) logDetail(`${skipped} module(s) scored < 3, skipped`);
+    logResult(`Ranker: ${ctx.hunterTargets.length} selected, ${skipped} skipped`);
   }
 
   // Step 3-5: Hunt (strategy depends on network mode)
@@ -110,7 +126,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
 
   if (network === "mainnet") {
     // Mainnet: no Docker, run agents locally
-    console.error(`Running ${ctx.hunterTargets.length} hunter(s) locally (concurrency: ${concurrency})...`);
+    logStep(`Hunting ${ctx.hunterTargets.length} module(s) locally (concurrency: ${concurrency})`);
 
     const workDir = resolve(target);
     await Promise.all(
@@ -133,11 +149,11 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     display.done();
   } else {
     // Devnet: Docker containers
-    console.error("Building Docker image...");
+    logStep("Building Docker image...");
     const projectRoot = resolve(import.meta.dirname, "../..");
     await buildImage(resolve(projectRoot, "Dockerfile"), projectRoot);
 
-    console.error(`Spawning ${ctx.hunterTargets.length} hunter(s) in Docker (concurrency: ${concurrency})...`);
+    logStep(`Hunting ${ctx.hunterTargets.length} module(s) in Docker (concurrency: ${concurrency})`);
     const hunterResults = await Promise.all(
       ctx.hunterTargets.map(async (mod) => {
         const release = await sem.acquire();
@@ -159,11 +175,11 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     display.done();
   }
 
-  console.error(`Collected ${ctx.rawFindings.length} raw finding(s).`);
+  logResult(`Collected ${ctx.rawFindings.length} raw finding(s)`);
 
   // Step 6: Validate (always local — just reads source files and reasons)
   if (ctx.rawFindings.length > 0) {
-    console.error(`Running ${ctx.rawFindings.length} validator agent(s) (concurrency: ${concurrency})...`);
+    logStep(`Validating ${ctx.rawFindings.length} finding(s) (concurrency: ${concurrency})`);
     const validated = await runValidators({
       client,
       findings: ctx.rawFindings,
@@ -175,10 +191,10 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     const confirmed = filterConfirmed(validated);
     ctx.findings = await deduplicateFindings(client, confirmed, model);
     checkpoint("validated-findings.json", ctx.findings);
-    console.error(`Validator confirmed ${ctx.findings.length} finding(s) after dedup.`);
+    logResult(`${ctx.findings.length} finding(s) confirmed after validation + dedup`);
   } else {
     ctx.findings = [];
-    console.error("No findings to validate.");
+    logDetail("no findings to validate");
   }
 
   // Step 7: Cleanup (only relevant for devnet containers)
@@ -255,7 +271,7 @@ async function runDevnetHunter(
   display: StatusDisplay,
   relatedModuleSignatures: string
 ): Promise<{ findings: Finding[] }> {
-  console.error(`[${mod.name}] Starting container (devnet)...`);
+  logDetail(`[${mod.name}] starting container`);
 
   const containerId = await startContainer({
     targetContract: target,
@@ -263,7 +279,7 @@ async function runDevnetHunter(
   });
   tracker.add(containerId);
 
-  console.error(`[${mod.name}] Container ${containerId.slice(0, 12)} — waiting for ready...`);
+  logDetail(`[${mod.name}] container ${containerId.slice(0, 12)} — waiting for ready`);
   await waitForReady(containerId);
 
   const context = await readContextJson(containerId);

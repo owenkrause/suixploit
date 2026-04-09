@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, writeFileSync } from "node:fs";
-import type { StatusDisplay } from "./display.js";
+import { type StatusDisplay, c } from "./display.js";
 
 export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
@@ -155,30 +155,47 @@ export async function runAgent(
     status(turns, totalInputTokens + totalOutputTokens, "thinking...");
 
     let response: Anthropic.Message;
-    try {
-      response = await client.messages.create({
-        model,
-        max_tokens: 16384,
-        ...(thinkingBudget > 0 ? {
-          thinking: { type: "enabled" as const, budget_tokens: thinkingBudget },
-        } : {}),
-        system: systemPrompt,
-        tools: [tool],
-        messages,
-      });
-    } catch (err) {
-      emit(`[${moduleName}] ✗ API error on turn ${turns}: ${String(err).slice(0, 120)}`);
-      log(`\n## Turn ${turns} — ERROR\n${String(err)}\n`);
-      if (display) display.remove(moduleName);
-      return {
-        moduleName,
-        turns,
-        inputTokens: totalInputTokens,
-        outputTokens: totalOutputTokens,
-        stopped: "error",
-        error: String(err),
-      };
+    const maxRetries = 5;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        response = await client.messages.create({
+          model,
+          max_tokens: 16384,
+          ...(thinkingBudget > 0 ? {
+            thinking: { type: "enabled" as const, budget_tokens: thinkingBudget },
+          } : {}),
+          system: systemPrompt,
+          tools: [tool],
+          messages,
+        });
+        break;
+      } catch (err) {
+        lastErr = err;
+        const isRateLimit = String(err).includes("429") || String(err).includes("rate_limit");
+        const isOverloaded = String(err).includes("529") || String(err).includes("overloaded");
+        if ((isRateLimit || isOverloaded) && attempt < maxRetries) {
+          const delay = Math.min(2 ** attempt * 5, 60);
+          status(turns, totalInputTokens + totalOutputTokens, `rate limited, retry in ${delay}s...`);
+          log(`\n## Turn ${turns} — rate limited, retrying in ${delay}s (attempt ${attempt + 1}/${maxRetries})\n`);
+          await new Promise((r) => setTimeout(r, delay * 1000));
+          continue;
+        }
+        emit(`${c.red}✗${c.reset} ${c.bold}${moduleName}${c.reset} ${c.dim}API error turn ${turns}:${c.reset} ${String(err).slice(0, 120)}`);
+        log(`\n## Turn ${turns} — ERROR\n${String(err)}\n`);
+        if (display) display.remove(moduleName);
+        return {
+          moduleName,
+          turns,
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          stopped: "error",
+          error: String(err),
+        };
+      }
     }
+    // @ts-expect-error — response is assigned in the loop or we returned
+    if (!response) throw lastErr;
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
@@ -197,7 +214,7 @@ export async function runAgent(
 
     if (response.stop_reason !== "tool_use") {
       const summary = summarizeThinking(response.content);
-      emit(`[${moduleName}] done after ${turns} turns (${formatTokens(totalTokens)} tokens) — ${summary}`);
+      emit(`${c.green}✓${c.reset} ${c.bold}${moduleName}${c.reset} ${c.dim}${turns} turns │ ${formatTokens(totalTokens)} tokens${c.reset}${summary ? ` — ${summary}` : ""}`);
       if (display) display.remove(moduleName);
       return {
         moduleName,
@@ -231,10 +248,10 @@ export async function runAgent(
           .join("\n")
           .slice(0, 50_000);
 
-        // Log errors as persistent messages
+        // Log command failures to file only — not as persistent display messages
+        // (failed commands are normal agent behavior, not worth surfacing)
         if (result.exitCode !== 0) {
-          const errPreview = (result.stderr || result.stdout || "").split("\n")[0].slice(0, 120);
-          emit(`[${moduleName}] ✗ exit ${result.exitCode}: ${errPreview}`);
+          log(`\n### Command failed (exit ${result.exitCode})\n`);
         }
 
         log(`\n### Result (exit ${result.exitCode})\n\`\`\`\n${output.slice(0, 5000)}\n\`\`\`\n`);
@@ -264,7 +281,7 @@ export async function runAgent(
     }
   }
 
-  emit(`[${moduleName}] hit max turns (${maxTurns}) | ${formatTokens(totalInputTokens + totalOutputTokens)} tokens`);
+  emit(`${c.yellow}!${c.reset} ${c.bold}${moduleName}${c.reset} ${c.dim}hit max turns (${maxTurns}) │ ${formatTokens(totalInputTokens + totalOutputTokens)} tokens${c.reset}`);
   log(`\n## Hit max turns (${maxTurns})\n`);
   if (display) display.remove(moduleName);
 

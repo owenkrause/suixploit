@@ -27,6 +27,7 @@ program
   )
   .option("--protocol <description>", "Protocol description override")
   .option("--invariants <invariants...>", "Invariants to test against")
+  .option("--include <patterns...>", "Only hunt modules whose names contain these strings (all modules still available as cross-module context)")
   .action(async (target: string, options) => {
     if (options.network === "mainnet" && !options.packageId) {
       console.error("Error: --package-id is required for mainnet mode");
@@ -44,6 +45,7 @@ program
       checkpointDir: options.checkpointDir,
       protocol: options.protocol,
       invariants: options.invariants,
+      include: options.include,
     });
 
     const json = JSON.stringify(result, null, 2);

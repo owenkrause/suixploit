@@ -6,6 +6,7 @@ import { buildValidatorAgentPrompt, buildOtherFindingsSummary } from "./prompt.j
 import { runAgent } from "../orchestrator/agent.js";
 import type { ExecFn } from "../orchestrator/agent.js";
 import { Semaphore } from "../orchestrator/semaphore.js";
+import { logDetail, logResult, logStep, logWarn } from "../orchestrator/display.js";
 
 export interface ValidatorOptions {
   client: Anthropic;
@@ -41,7 +42,7 @@ export async function runValidators(options: ValidatorOptions): Promise<Validate
         if (checkpointDir) {
           const path = resolve(checkpointDir, `verdict-${finding.id}.json`);
           writeFileSync(path, JSON.stringify(verdict, null, 2));
-          console.error(`[validator:${finding.id}] Verdict saved to ${path}`);
+          logDetail(`[validator:${finding.id}] verdict saved`);
         }
         return verdict;
       } finally {
@@ -90,7 +91,7 @@ When you are done, write your verdict to verdict-${finding.id}.json in the curre
     const { stdout } = await exec(`cat verdict-${finding.id}.json`);
     return JSON.parse(stdout) as ValidatorVerdict;
   } catch {
-    console.error(`[validator:${finding.id}] Failed to parse verdict, defaulting to confirmed`);
+    logWarn(`[validator:${finding.id}] failed to parse verdict, defaulting to confirmed`);
     return {
       id: finding.id,
       validatorVerdict: "confirmed",
@@ -145,7 +146,7 @@ Return a JSON array of objects: { "id": "<finding id>", "duplicateOf": "<canonic
 
 Every finding must appear exactly once. Set duplicateOf to null for canonical findings. Return ONLY the JSON array.`;
 
-  console.error("Running deduplication...");
+  logStep("Deduplicating findings...");
   const response = await client.messages.create({
     model,
     max_tokens: 4096,
@@ -168,10 +169,10 @@ Every finding must appear exactly once. Set duplicateOf to null for canonical fi
       return { ...f, duplicateOf: result?.duplicateOf ?? undefined };
     }).filter((f) => !dominated.has(f.id));
 
-    console.error(`Dedup: ${findings.length} -> ${deduped.length} unique findings`);
+    logDetail(`${findings.length} → ${deduped.length} unique findings`);
     return deduped;
   } catch {
-    console.error("Dedup parse failed, keeping all findings");
+    logWarn("dedup parse failed, keeping all findings");
     return findings;
   }
 }
