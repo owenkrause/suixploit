@@ -12,6 +12,7 @@ import type { ExecFn } from "./agent.js";
 import { makeDockerExec, makeLocalExec } from "./exec.js";
 import { Semaphore } from "./semaphore.js";
 import { ResourceTracker } from "./tracker.js";
+import { StatusDisplay } from "./display.js";
 
 export interface ScanOptions {
   target: string;
@@ -96,6 +97,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   // Step 3-5: Hunt (strategy depends on network mode)
   const sem = new Semaphore(concurrency);
   const allFindings: Finding[] = [];
+  const display = new StatusDisplay();
 
   if (network === "mainnet") {
     // Mainnet: no Docker, run agents locally
@@ -106,7 +108,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       ctx.hunterTargets.map(async (mod) => {
         const release = await sem.acquire();
         try {
-          const findings = await runMainnetHunter(client, mod, workDir, checkpointDir, model, maxTurns, packageId!);
+          const findings = await runMainnetHunter(client, mod, workDir, checkpointDir, model, maxTurns, packageId!, display);
           if (findings.length > 0) {
             checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, findings);
             allFindings.push(...findings);
@@ -118,6 +120,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       })
     );
     ctx.rawFindings = allFindings;
+    display.done();
   } else {
     // Devnet: Docker containers
     console.error("Building Docker image...");
@@ -129,7 +132,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       ctx.hunterTargets.map(async (mod) => {
         const release = await sem.acquire();
         try {
-          const result = await runDevnetHunter(client, tracker, mod, target, model, maxTurns);
+          const result = await runDevnetHunter(client, tracker, mod, target, model, maxTurns, display);
           if (result.findings.length > 0) {
             checkpoint(`hunter-${mod.name.replace(/::/g, "-")}.json`, result.findings);
             allFindings.push(...result.findings);
@@ -142,6 +145,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       })
     );
     ctx.rawFindings = hunterResults.flatMap((r) => r.findings);
+    display.done();
   }
 
   console.error(`Collected ${ctx.rawFindings.length} raw finding(s).`);
@@ -181,7 +185,8 @@ async function runMainnetHunter(
   checkpointDir: string,
   model: string,
   maxTurns: number | undefined,
-  packageId: string
+  packageId: string,
+  display: StatusDisplay
 ): Promise<Finding[]> {
   const rpcUrl = "https://fullnode.mainnet.sui.io:443";
   const hunterPrompt = buildMainnetHunterPrompt(mod, packageId, rpcUrl);
@@ -211,6 +216,7 @@ async function runMainnetHunter(
     maxTurns,
     moduleName: mod.name,
     logFile: resolve(workspace, "agent.log"),
+    display,
   });
 
   try {
@@ -227,7 +233,8 @@ async function runDevnetHunter(
   mod: ModuleInfo,
   target: string,
   model: string,
-  maxTurns?: number
+  maxTurns: number | undefined,
+  display: StatusDisplay
 ): Promise<{ findings: Finding[] }> {
   console.error(`[${mod.name}] Starting container (devnet)...`);
 
@@ -265,6 +272,7 @@ async function runDevnetHunter(
     model,
     maxTurns,
     moduleName: mod.name,
+    display,
   });
 
   const findingsJson = await readFindings(containerId);

@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, writeFileSync } from "node:fs";
+import type { StatusDisplay } from "./display.js";
 
 export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
@@ -10,6 +11,7 @@ export interface AgentOptions {
   maxTurns?: number;
   moduleName: string;
   logFile?: string;
+  display?: StatusDisplay;
 }
 
 export interface AgentResult {
@@ -103,9 +105,8 @@ export async function runAgent(
   client: Anthropic,
   options: AgentOptions
 ): Promise<AgentResult> {
-  const { exec, systemPrompt, model, maxTurns, moduleName, logFile } = options;
+  const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display } = options;
   const tool = buildToolDefinition();
-  const tag = `[${moduleName}]`;
 
   // Initialize log file with system prompt
   if (logFile) {
@@ -115,6 +116,23 @@ export async function runAgent(
 
   function log(entry: string) {
     if (logFile) appendFileSync(logFile, entry + "\n");
+  }
+
+  function status(turn: number, tokens: number, text: string) {
+    const tok = formatTokens(tokens);
+    if (display) {
+      display.update(moduleName, { turn, tokens: tok, status: text });
+    } else {
+      console.error(`[${moduleName}] turn ${turn} | ${tok} tokens | ${text}`);
+    }
+  }
+
+  function emit(message: string) {
+    if (display) {
+      display.log(message);
+    } else {
+      console.error(message);
+    }
   }
 
   let messages: Anthropic.MessageParam[] = [
@@ -129,8 +147,11 @@ export async function runAgent(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
+  status(0, 0, "starting...");
+
   while (!maxTurns || turns < maxTurns) {
     turns++;
+    status(turns, totalInputTokens + totalOutputTokens, "thinking...");
 
     let response: Anthropic.Message;
     try {
@@ -142,8 +163,9 @@ export async function runAgent(
         messages,
       });
     } catch (err) {
-      console.error(`${tag} ✗ API error on turn ${turns}: ${String(err).slice(0, 120)}`);
+      emit(`[${moduleName}] ✗ API error on turn ${turns}: ${String(err).slice(0, 120)}`);
       log(`\n## Turn ${turns} — ERROR\n${String(err)}\n`);
+      if (display) display.remove(moduleName);
       return {
         moduleName,
         turns,
@@ -170,7 +192,8 @@ export async function runAgent(
 
     if (response.stop_reason !== "tool_use") {
       const summary = summarizeThinking(response.content);
-      console.error(`${tag} turn ${turns} | ${formatTokens(totalTokens)} tokens | done — ${summary}`);
+      emit(`[${moduleName}] done after ${turns} turns (${formatTokens(totalTokens)} tokens) — ${summary}`);
+      if (display) display.remove(moduleName);
       return {
         moduleName,
         turns,
@@ -185,14 +208,13 @@ export async function runAgent(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
     );
 
-    // Status line: turn number, tokens, what the agent is doing
+    // Status: show what commands are running
     const cmdSummary = toolUseBlocks.map((b) => {
       const cmd = (b.input as { command: string }).command;
-      // Show just the base command, not args
       const base = cmd.split(/[|\s]/)[0];
       return base;
     }).join(", ");
-    console.error(`${tag} turn ${turns} | ${formatTokens(totalTokens)} tokens | ${cmdSummary}`);
+    status(turns, totalTokens, cmdSummary);
 
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
@@ -204,10 +226,10 @@ export async function runAgent(
           .join("\n")
           .slice(0, 50_000);
 
-        // Log errors to stderr
+        // Log errors as persistent messages
         if (result.exitCode !== 0) {
           const errPreview = (result.stderr || result.stdout || "").split("\n")[0].slice(0, 120);
-          console.error(`${tag}   ✗ exit ${result.exitCode}: ${errPreview}`);
+          emit(`[${moduleName}] ✗ exit ${result.exitCode}: ${errPreview}`);
         }
 
         log(`\n### Result (exit ${result.exitCode})\n\`\`\`\n${output.slice(0, 5000)}\n\`\`\`\n`);
@@ -237,8 +259,9 @@ export async function runAgent(
     }
   }
 
-  console.error(`${tag} hit max turns (${maxTurns}) | ${formatTokens(totalInputTokens + totalOutputTokens)} tokens`);
+  emit(`[${moduleName}] hit max turns (${maxTurns}) | ${formatTokens(totalInputTokens + totalOutputTokens)} tokens`);
   log(`\n## Hit max turns (${maxTurns})\n`);
+  if (display) display.remove(moduleName);
 
   return {
     moduleName,
