@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { appendFileSync, writeFileSync } from "node:fs";
 
 export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
@@ -8,6 +9,7 @@ export interface AgentOptions {
   model: string;
   maxTurns?: number;
   moduleName: string;
+  logFile?: string;
 }
 
 export interface AgentResult {
@@ -80,12 +82,40 @@ Use \`npx tsx\` to run TypeScript files.
 When you are done, write your findings to findings.json in the current directory.`;
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function summarizeThinking(content: Anthropic.ContentBlock[]): string {
+  for (const block of content) {
+    if (block.type === "text" && block.text.length > 0) {
+      // First sentence or first 80 chars of the text block
+      const first = block.text.split(/[.\n]/)[0].trim();
+      return first.length > 80 ? first.slice(0, 77) + "..." : first;
+    }
+  }
+  return "";
+}
+
 export async function runAgent(
   client: Anthropic,
   options: AgentOptions
 ): Promise<AgentResult> {
-  const { exec, systemPrompt, model, maxTurns, moduleName } = options;
+  const { exec, systemPrompt, model, maxTurns, moduleName, logFile } = options;
   const tool = buildToolDefinition();
+  const tag = `[${moduleName}]`;
+
+  // Initialize log file with system prompt
+  if (logFile) {
+    writeFileSync(logFile, `# Agent Log: ${moduleName}\n# Model: ${model}\n# Started: ${new Date().toISOString()}\n\n`);
+    appendFileSync(logFile, `## System Prompt\n${systemPrompt}\n\n---\n\n`);
+  }
+
+  function log(entry: string) {
+    if (logFile) appendFileSync(logFile, entry + "\n");
+  }
 
   let messages: Anthropic.MessageParam[] = [
     {
@@ -112,6 +142,8 @@ export async function runAgent(
         messages,
       });
     } catch (err) {
+      console.error(`${tag} ✗ API error on turn ${turns}: ${String(err).slice(0, 120)}`);
+      log(`\n## Turn ${turns} — ERROR\n${String(err)}\n`);
       return {
         moduleName,
         turns,
@@ -124,11 +156,21 @@ export async function runAgent(
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
+    const totalTokens = totalInputTokens + totalOutputTokens;
 
     // Add assistant response to conversation
     messages.push({ role: "assistant", content: response.content });
 
+    // Log full response
+    log(`\n## Turn ${turns} (${formatTokens(totalTokens)} total)`);
+    for (const block of response.content) {
+      if (block.type === "text") log(`\n### Thinking\n${block.text}\n`);
+      if (block.type === "tool_use") log(`\n### Tool: ${(block.input as { command: string }).command}\n`);
+    }
+
     if (response.stop_reason !== "tool_use") {
+      const summary = summarizeThinking(response.content);
+      console.error(`${tag} turn ${turns} | ${formatTokens(totalTokens)} tokens | done — ${summary}`);
       return {
         moduleName,
         turns,
@@ -138,21 +180,37 @@ export async function runAgent(
       };
     }
 
-    // Execute all tool calls in parallel
+    // Execute all tool calls
     const toolUseBlocks = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
     );
 
+    // Status line: turn number, tokens, what the agent is doing
+    const cmdSummary = toolUseBlocks.map((b) => {
+      const cmd = (b.input as { command: string }).command;
+      // Show just the base command, not args
+      const base = cmd.split(/[|\s]/)[0];
+      return base;
+    }).join(", ");
+    console.error(`${tag} turn ${turns} | ${formatTokens(totalTokens)} tokens | ${cmdSummary}`);
+
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
         const input = block.input as { command: string };
-        console.error(`[${moduleName}] $ ${input.command.slice(0, 100)}`);
 
         const result = await exec(input.command);
         const output = [result.stdout, result.stderr]
           .filter(Boolean)
           .join("\n")
           .slice(0, 50_000);
+
+        // Log errors to stderr
+        if (result.exitCode !== 0) {
+          const errPreview = (result.stderr || result.stdout || "").split("\n")[0].slice(0, 120);
+          console.error(`${tag}   ✗ exit ${result.exitCode}: ${errPreview}`);
+        }
+
+        log(`\n### Result (exit ${result.exitCode})\n\`\`\`\n${output.slice(0, 5000)}\n\`\`\`\n`);
 
         return {
           type: "tool_result" as const,
@@ -178,6 +236,9 @@ export async function runAgent(
       messages.push({ role: "user", content: toolResults });
     }
   }
+
+  console.error(`${tag} hit max turns (${maxTurns}) | ${formatTokens(totalInputTokens + totalOutputTokens)} tokens`);
+  log(`\n## Hit max turns (${maxTurns})\n`);
 
   return {
     moduleName,

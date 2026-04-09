@@ -37,7 +37,7 @@ export async function runValidators(options: ValidatorOptions): Promise<Validate
     findings.map(async (finding) => {
       const release = await sem.acquire();
       try {
-        const verdict = await runValidatorForFinding(client, finding, findings, exec, model, maxTurns);
+        const verdict = await runValidatorForFinding(client, finding, findings, exec, model, maxTurns, checkpointDir);
         if (checkpointDir) {
           const path = resolve(checkpointDir, `verdict-${finding.id}.json`);
           writeFileSync(path, JSON.stringify(verdict, null, 2));
@@ -59,7 +59,8 @@ async function runValidatorForFinding(
   allFindings: Finding[],
   exec: ExecFn,
   model: string,
-  maxTurns: number
+  maxTurns: number,
+  checkpointDir?: string
 ): Promise<ValidatorVerdict> {
   const otherSummary = buildOtherFindingsSummary(allFindings, finding.id);
   const prompt = buildValidatorAgentPrompt(finding, otherSummary);
@@ -73,7 +74,7 @@ Use it to read .move files, grep for functions, trace code paths.
 
 When you are done, write your verdict to verdict-${finding.id}.json in the current directory.`;
 
-  console.error(`[validator:${finding.id}] Starting review...`);
+  const logFile = checkpointDir ? resolve(checkpointDir, `validator-${finding.id}.log`) : undefined;
 
   const result = await runAgent(client, {
     exec,
@@ -81,9 +82,8 @@ When you are done, write your verdict to verdict-${finding.id}.json in the curre
     model,
     maxTurns,
     moduleName: `validator:${finding.id}`,
+    logFile,
   });
-
-  console.error(`[validator:${finding.id}] Finished: ${result.stopped} after ${result.turns} turns (${result.inputTokens + result.outputTokens} tokens)`);
 
   // Read verdict from local file
   try {

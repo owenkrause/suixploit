@@ -204,16 +204,14 @@ async function runMainnetHunter(
   const projectRoot = resolve(import.meta.dirname, "../..");
   safeSymlink(resolve(projectRoot, "node_modules"), resolve(workspace, "node_modules"));
 
-  console.error(`[${mod.name}] Running locally (mainnet dry-run)...`);
   const result = await runAgent(client, {
     exec: makeLocalExec(workspace),
     systemPrompt,
     model,
     maxTurns,
     moduleName: mod.name,
+    logFile: resolve(workspace, "agent.log"),
   });
-
-  console.error(`[${mod.name}] Agent finished: ${result.stopped} after ${result.turns} turns (${result.inputTokens + result.outputTokens} tokens)`);
 
   try {
     const findingsJson = readFileSync(resolve(workspace, "findings.json"), "utf-8");
@@ -261,7 +259,6 @@ async function runDevnetHunter(
   });
   const systemPrompt = buildSystemPrompt(hunterPrompt, context);
 
-  console.error(`[${mod.name}] Running agent (model: ${model}${maxTurns ? `, max turns: ${maxTurns}` : ''})...`);
   const result = await runAgent(client, {
     exec: makeDockerExec(containerId),
     systemPrompt,
@@ -269,8 +266,6 @@ async function runDevnetHunter(
     maxTurns,
     moduleName: mod.name,
   });
-
-  console.error(`[${mod.name}] Agent finished: ${result.stopped} after ${result.turns} turns (${result.inputTokens + result.outputTokens} tokens)`);
 
   const findingsJson = await readFindings(containerId);
   try {
