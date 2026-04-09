@@ -1,76 +1,112 @@
-# Suixploit — Claude Code Orchestration
+# Suixploit
 
-This project is a multi-agent pipeline for finding vulnerabilities in Sui Move contracts. You are the orchestrator.
+Multi-agent pipeline for autonomous vulnerability discovery in Sui Move smart contracts.
 
-## Automated Pipeline
+## Running a Scan
 
-Run a full scan:
 ```bash
 ANTHROPIC_API_KEY=<key> npx suixploit scan <target> [options]
 ```
 
 Options:
+- `--package-id <id>` — On-chain package ID (required for mainnet)
+- `--network <network>` — `mainnet` (default) or `devnet`
 - `--concurrency <n>` — Max parallel agents (default: 5)
-- `--model <model>` — Model for agents (default: claude-sonnet-4-6)
-- `--max-turns <n>` — Max turns per hunter (default: 50)
+- `--model <model>` — Model for agents (default: claude-opus-4-6)
+- `--max-turns <n>` — Max turns per hunter agent (default: unlimited)
+- `--include <patterns...>` — Only hunt modules matching these substrings
 - `--output <path>` — Write results to file (default: stdout)
-- `--keep-containers` — Keep Docker containers for debugging
+- `--keep-containers` — Keep Docker containers after devnet runs
+- `--checkpoint-dir <path>` — Override output directory
+- `--protocol <description>` — Protocol description override
+- `--invariants <invariants...>` — Invariants to test against
 
-Example:
+Examples:
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... npx suixploit scan contracts/easy/capability_leak --concurrency 1 --output results.json
+# Mainnet scan (dry-run, no Docker needed)
+npx suixploit scan contracts/deepbookv3-main \
+  --package-id 0x337f... --include deepbook_predict --concurrency 3
+
+# Devnet scan (Docker required)
+npx suixploit scan contracts/examples/easy/capability_leak \
+  --network devnet --output results.json
 ```
 
-Requires: Docker running, ANTHROPIC_API_KEY set.
+## Pipeline
 
-The pipeline automatically:
-1. Resolves Move modules from the target path
+1. Resolves Move modules from target path
 2. Ranks modules by attack surface (skipped if <= 3 modules)
-3. Builds a Docker image with Sui CLI + Node
-4. Spawns one container per module (devnet + contract deployed + accounts funded)
-5. Runs parallel hunter agents via Anthropic API
-6. Collects and validates findings
-7. Outputs a ScanResult JSON
-8. Cleans up all containers
+3. Runs parallel hunter agents (mainnet: local dry-run, devnet: Docker containers)
+4. Assigns global sequential IDs (vuln-001, vuln-002, ...)
+5. Validates findings with independent validator agents
+6. Deduplicates by root cause
+7. Outputs ScanResult JSON
 
-## Oracle Usage (for hunter agents)
-```bash
-# Check if a transaction bypasses access control
-npx tsx src/oracle/check.ts --signal abort --tx exploit.ts --attacker <addr> --expected should_abort
+## Output Structure
 
-# Check if attacker gained funds
-npx tsx src/oracle/check.ts --signal balance --tx exploit.ts --attacker <addr>
-
-# Check if attacker stole objects
-npx tsx src/oracle/check.ts --signal ownership --tx exploit.ts --attacker <addr>
+Each run creates `.suixploit/<timestamp>/` at the project root:
 ```
-
-The exploit TS file must export:
-- `buildTx(client: SuiClient, attackerAddress: string)` — returns a Transaction
-- `attackerKeypair` — Ed25519Keypair for the attacker
+.suixploit/
+  2026-04-08T22-31-00/
+    scan.json                    # config, timing, counts
+    findings/
+      all-raw.json               # all hunter findings (checkpoint)
+      validated.json             # after validation + dedup
+    hunters/
+      deepbook_margin-oracle/
+        agent.log                # full agent conversation
+        findings.json            # confirmed exploits
+        vulns.json               # all hypotheses tested
+        scratch/                 # agent-created scripts
+    validators/
+      deepbook_margin-oracle/
+        vuln-001/
+          verdict.json           # validator decision
+          agent.log
+          scratch/
+```
 
 ## Project Structure
-- `src/orchestrator/` — Docker management, agent loop, concurrency, cleanup
-- `src/oracle/` — deterministic exploit confirmation (no LLM)
-- `src/hunter/` — agent prompt templates
-- `src/ranker/` — module scoring
-- `src/validator/` — false positive filtering
-- `src/devnet/` — local devnet lifecycle
-- `contracts/examples/` — intentionally vulnerable test contracts
-- `src/cli.ts` — CLI entry point
-- `src/pipeline.ts` — module resolution and pipeline helpers
+
+```
+src/
+  cli.ts                 # CLI entry point
+  pipeline.ts            # module resolution helpers
+  types.ts               # shared interfaces (Finding, ScanResult, ScanMeta, etc.)
+  orchestrator/
+    index.ts             # main scan pipeline, hunter dispatch
+    agent.ts             # agent loop (tool calls, retries, display)
+    paths.ts             # output directory layout
+    display.ts           # live terminal status display
+    exec.ts              # command execution (local + Docker)
+    docker.ts            # Docker image/container management
+    semaphore.ts         # concurrency limiter
+    tracker.ts           # container cleanup
+  hunter/
+    index.ts             # hunter prompt builder (devnet)
+    prompt.ts            # hunter prompt builder (mainnet + shared)
+  ranker/                # module scoring by attack surface
+  validator/             # independent finding re-analysis
+  oracle/                # deterministic exploit confirmation (devnet only)
+  devnet/                # local devnet lifecycle (Docker)
+contracts/examples/      # intentionally vulnerable test contracts
+```
 
 ## Test Contracts
-- `contracts/examples/easy/capability_leak` — admin cap leaks to any caller
-- `contracts/examples/easy/unchecked_arithmetic` — share inflation via donation attack
-- `contracts/examples/medium/ownership_escape` — missing ownership check on cancel
-- `contracts/examples/medium/flash_loan_misuse` — flash loan repay doesn't verify source
-- `contracts/examples/hard/shared_object_race` — auction settle/bid race condition
-- `contracts/examples/hard/otw_abuse` — unprotected mint on shared treasury cap
+- `easy/capability_leak` — admin cap leaks to any caller
+- `easy/unchecked_arithmetic` — share inflation via donation attack
+- `medium/ownership_escape` — missing ownership check on cancel
+- `medium/flash_loan_misuse` — flash loan repay doesn't verify source
+- `hard/shared_object_race` — auction settle/bid race condition
+- `hard/otw_abuse` — unprotected mint on shared treasury cap
+
+## Commands
+- `pnpm build` — compile TypeScript
+- `pnpm test` — run tests (vitest)
 
 ## Key Dependencies
-- `@anthropic-ai/sdk` — Anthropic API client (agent conversations)
-- `@mysten/sui` — Sui TypeScript SDK
+- `@anthropic-ai/sdk` — Anthropic API client
+- `@mysten/sui` — Sui TypeScript SDK (v2 — use `SuiJsonRpcClient`, NOT `SuiClient`)
 - `commander` — CLI framework
 - `vitest` — test runner
 - `tsx` — TypeScript execution
