@@ -219,6 +219,12 @@ async function runMainnetHunter(
     display,
   });
 
+  // Copy vulns tracker to checkpoint dir if it exists
+  try {
+    const vulnsJson = readFileSync(resolve(workspace, "vulns.json"), "utf-8");
+    writeFileSync(resolve(checkpointDir, `vulns-${safeName}.json`), vulnsJson);
+  } catch { /* no vulns.json — agent may not have written it */ }
+
   try {
     const findingsJson = readFileSync(resolve(workspace, "findings.json"), "utf-8");
     return JSON.parse(findingsJson) as Finding[];
@@ -346,10 +352,25 @@ Save exploit scripts as .ts files and run with \`npx tsx <file>\`.
 ## Task
 1. Read and analyze the source code for vulnerabilities
 2. Query mainnet state to understand the contract's current deployment (objects, pools, balances)
-3. Craft exploit transactions and dry-run them to prove they work
+3. For each potential vulnerability, attempt to craft and dry-run an exploit
 4. A successful dry-run with status "success" that violates an invariant = confirmed vulnerability
 
-When done, write findings to findings.json:
+## Output files — update these as you go
+
+### vulns.json — running vulnerability tracker
+Write this file EARLY and update it after each vulnerability you investigate. Include ALL potential vulnerabilities — both confirmed and failed. This is your audit trail.
+\`\`\`json
+[{
+  "id": "unique-id",
+  "title": "Short title",
+  "status": "confirmed|failed|untested",
+  "severity": "critical|high|medium|low",
+  "reason": "One line: why it works, or why the exploit attempt failed"
+}]
+\`\`\`
+
+### findings.json — confirmed vulnerabilities with full detail
+Only include vulnerabilities where you successfully demonstrated the exploit via dry-run.
 \`\`\`json
 [{
   "id": "unique-id",
@@ -362,5 +383,7 @@ When done, write findings to findings.json:
   "oracleResult": { "signal": "dry_run", "status": "EXPLOIT_CONFIRMED", "dryRunResult": "paste dry-run output" },
   "iterations": 3
 }]
-\`\`\``;
+\`\`\`
+
+IMPORTANT: Update vulns.json after EVERY vulnerability you investigate, even if the exploit fails. This is your most important output — we'd rather have a complete list of potential vulns with failed exploits than miss vulns because you couldn't write the exploit.`;
 }
