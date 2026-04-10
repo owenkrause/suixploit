@@ -2,18 +2,16 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { type StatusDisplay, c } from "./display.js";
 import { listReferences, readReference } from "../references.js";
-import type { DepthLevel } from "./index.js";
+import type { EffortLevel } from "./index.js";
 
 const MAX_RETRIES = 5;
-const TOOL_OUTPUT_LIMIT = 50_000;
 const LOG_OUTPUT_LIMIT = 5_000;
 
-const DEPTH_PRESETS: Record<DepthLevel, { thinkingBudget: number; maxTokens: number }> = {
-  low:       { thinkingBudget: 8_000,   maxTokens: 8_192 },
-  medium:    { thinkingBudget: 16_000,  maxTokens: 16_384 },
-  high:      { thinkingBudget: 64_000,  maxTokens: 32_768 },
-  max:       { thinkingBudget: 128_000, maxTokens: 32_768 },
-  unlimited: { thinkingBudget: 500_000, maxTokens: 65_536 },
+const EFFORT_PRESETS: Record<EffortLevel, { effort: EffortLevel; maxTokens: number; toolOutputLimit: number }> = {
+  low:    { effort: "low",    maxTokens: 16_000,  toolOutputLimit: 50_000 },
+  medium: { effort: "medium", maxTokens: 32_000,  toolOutputLimit: 50_000 },
+  high:   { effort: "high",   maxTokens: 64_000,  toolOutputLimit: 100_000 },
+  max:    { effort: "max",    maxTokens: 128_000, toolOutputLimit: 150_000 },
 };
 
 export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
@@ -26,7 +24,7 @@ export interface AgentOptions {
   moduleName: string;
   logFile?: string;
   display?: StatusDisplay;
-  depth?: DepthLevel;
+  effort?: EffortLevel;
 }
 
 export interface AgentResult {
@@ -52,6 +50,28 @@ export function buildToolDefinition(): Anthropic.Tool {
         },
       },
       required: ["command"],
+    },
+  };
+}
+
+export function buildWriteFileTool(): Anthropic.Tool {
+  return {
+    name: "write_file",
+    description:
+      "Write content to a file. Use this instead of bash heredocs/echo for writing JSON, TypeScript, or any multi-line content. Handles escaping correctly.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description: "File path relative to the working directory (e.g. 'findings.json', 'exploit.mts')",
+        },
+        content: {
+          type: "string",
+          description: "The full file content to write",
+        },
+      },
+      required: ["path", "content"],
     },
   };
 }
@@ -104,7 +124,7 @@ The Sui devnet is already running. The contract is already deployed. Accounts ar
 - Admin address: ${context.adminAddress}
 - User address: ${context.userAddress}
 
-You have a \`bash\` tool to run shell commands. The contract source is at ./target/ (symlink to /workspace).
+You have a \`bash\` tool to run shell commands and a \`write_file\` tool to write files (use this for JSON and multi-line content). The contract source is at ./target/ (symlink to /workspace).
 Write your exploit scripts in the current directory.
 
 When you are done, write your findings to findings.json in the current directory.`;
@@ -123,7 +143,7 @@ You are analyzing a live contract on Sui mainnet. All transactions are simulated
 - RPC URL: ${context.rpcUrl}
 - Package ID: ${context.packageId}
 
-You have a \`bash\` tool to run shell commands. The contract source is at ./target/ (symlink to the project).
+You have a \`bash\` tool to run shell commands and a \`write_file\` tool to write files (use this for JSON and multi-line content). The contract source is at ./target/ (symlink to the project).
 The @mysten/sui v2 TypeScript SDK is available. Use \`npx tsx <file>.mts\` to run TypeScript files.
 IMPORTANT: Use \`SuiJsonRpcClient\` from \`@mysten/sui/jsonRpc\` — NOT \`SuiClient\` (which does not exist in v2).
 Write your exploit scripts in the current directory.
@@ -152,9 +172,9 @@ export async function runAgent(
   client: Anthropic,
   options: AgentOptions
 ): Promise<AgentResult> {
-  const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display, depth = "medium" } = options;
-  const { thinkingBudget, maxTokens } = DEPTH_PRESETS[depth];
-  const tools = [buildToolDefinition(), ...buildReferenceTools()];
+  const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display, effort = "medium" } = options;
+  const { effort: effortLevel, maxTokens, toolOutputLimit } = EFFORT_PRESETS[effort];
+  const tools = [buildToolDefinition(), buildWriteFileTool(), ...buildReferenceTools()];
 
   // Initialize log file with system prompt
   if (logFile) {
@@ -209,9 +229,8 @@ export async function runAgent(
         response = await client.messages.create({
           model,
           max_tokens: maxTokens,
-          ...(thinkingBudget > 0 ? {
-            thinking: { type: "enabled" as const, budget_tokens: thinkingBudget },
-          } : {}),
+          thinking: { type: "adaptive" as const },
+          output_config: { effort: effortLevel },
           system: systemPrompt,
           tools,
           messages,
@@ -258,6 +277,10 @@ export async function runAgent(
       else if (block.type === "text") log(`\n### Response\n${block.text}\n`);
       else if (block.type === "tool_use") {
         if (block.name === "bash") log(`\n### Tool: bash — ${(block.input as { command: string }).command}\n`);
+        else if (block.name === "write_file") {
+          const { path, content } = block.input as { path: string; content: string };
+          log(`\n### Tool: write_file — ${path} (${content.length} bytes)\n\`\`\`\n${content.slice(0, LOG_OUTPUT_LIMIT)}\n\`\`\`\n`);
+        }
         else log(`\n### Tool: ${block.name}(${JSON.stringify(block.input)})\n`);
       }
     }
@@ -284,6 +307,7 @@ export async function runAgent(
     const cmdSummary = toolUseBlocks.map((b) => {
       if (b.name === "list_references") return "list_references";
       if (b.name === "read_reference") return `ref:${(b.input as { name: string }).name}`;
+      if (b.name === "write_file") return `write:${(b.input as { path: string }).path}`;
       const cmd = (b.input as { command: string }).command;
       return cmd.split(/[|\s]/)[0];
     }).join(", ");
@@ -297,6 +321,15 @@ export async function runAgent(
           output = listReferences();
         } else if (block.name === "read_reference") {
           output = readReference((block.input as { name: string }).name);
+        } else if (block.name === "write_file") {
+          const { path, content } = block.input as { path: string; content: string };
+          const b64 = Buffer.from(content).toString("base64");
+          const result = await exec(`echo '${b64}' | base64 -d > ${path}`);
+          if (result.exitCode === 0) {
+            output = `Wrote ${content.length} bytes to ${path}`;
+          } else {
+            output = `Failed to write ${path}: ${result.stderr}`;
+          }
         } else {
           // bash
           const input = block.input as { command: string };
@@ -304,7 +337,7 @@ export async function runAgent(
           output = [result.stdout, result.stderr]
             .filter(Boolean)
             .join("\n")
-            .slice(0, TOOL_OUTPUT_LIMIT);
+            .slice(0, toolOutputLimit);
 
           if (result.exitCode !== 0) {
             log(`\n### Command failed (exit ${result.exitCode})\n`);

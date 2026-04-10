@@ -47,10 +47,28 @@ describe("buildValidatorAgentPrompt", () => {
     expect(prompt).toContain("Severity:");
   });
 
-  it("verdict file path uses 'in the current directory'", () => {
+  it("verdict file path references the finding ID", () => {
     const prompt = buildValidatorAgentPrompt(sampleFinding, "No other findings.");
-    expect(prompt).toContain("in the current directory");
+    expect(prompt).toContain("verdict-f1.json");
     expect(prompt).not.toContain("/workspace/");
+  });
+
+  it("contains foundational Sui/Move security context", () => {
+    const prompt = buildValidatorAgentPrompt(sampleFinding, "No other findings.");
+    expect(prompt).toContain("Capability Pattern");
+    expect(prompt).toContain("abort-before-checkpoint");
+  });
+
+  it("contains false positive catalog inline", () => {
+    const prompt = buildValidatorAgentPrompt(sampleFinding, "No other findings.");
+    expect(prompt).toContain("Rationalizations to Reject");
+    expect(prompt).toContain("Self-Hallucination Check Protocol");
+  });
+
+  it("contains finding quality criteria", () => {
+    const prompt = buildValidatorAgentPrompt(sampleFinding, "No other findings.");
+    expect(prompt).toContain("What Counts as a Finding");
+    expect(prompt).toContain("Griefing where attacker pays more than the damage caused");
   });
 });
 

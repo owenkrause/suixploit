@@ -70,6 +70,7 @@ export interface ScanMeta {
   network: "devnet" | "mainnet";
   concurrency: number;
   maxTurns: number | null;
+  effort: string;
   packageId: string | null;
   startedAt: string;
   completedAt: string | null;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Semaphore } from "./semaphore.js";
 import { ResourceTracker } from "./tracker.js";
-import { buildToolDefinition, buildReferenceTools, buildSystemPrompt, buildMainnetSystemPrompt } from "./agent.js";
+import { buildToolDefinition, buildWriteFileTool, buildReferenceTools, buildSystemPrompt, buildMainnetSystemPrompt } from "./agent.js";
 import { generateRunId, buildScanPaths, safeName, hunterWorkspace, hunterScratch } from "./paths.js";
 import { makeLocalExec } from "./exec.js";
 
@@ -75,6 +75,15 @@ describe("buildToolDefinition", () => {
     const tool = buildToolDefinition();
     expect(tool.name).toBe("bash");
     expect(tool.input_schema.properties).toHaveProperty("command");
+  });
+});
+
+describe("buildWriteFileTool", () => {
+  it("returns a write_file tool with path and content parameters", () => {
+    const tool = buildWriteFileTool();
+    expect(tool.name).toBe("write_file");
+    expect(tool.input_schema.properties).toHaveProperty("path");
+    expect(tool.input_schema.properties).toHaveProperty("content");
   });
 });
 

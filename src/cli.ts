@@ -35,7 +35,7 @@ program
   .option("--protocol <description>", "Protocol description override")
   .option("--invariants <invariants...>", "Invariants to test against")
   .option("--include <patterns...>", "Only hunt modules whose names contain these strings (all modules still available as cross-module context)")
-  .option("--depth <level>", "Agent thinking depth: low, medium, high, max, unlimited", "medium")
+  .option("--effort <level>", "Agent thinking effort: low, medium, high, max", "medium")
   .action(async (target: string, options) => {
     // Validate target exists
     if (!existsSync(target)) {
@@ -63,11 +63,29 @@ program
     const concurrency = parsePositiveInt(options.concurrency, "--concurrency");
     const maxTurns = options.maxTurns ? parsePositiveInt(options.maxTurns, "--max-turns") : undefined;
 
-    // Validate depth
-    const validDepths = ["low", "medium", "high", "max", "unlimited"];
-    if (!validDepths.includes(options.depth)) {
-      console.error(`Error: --depth must be one of ${validDepths.join(", ")}, got "${options.depth}"`);
+    // Validate effort
+    const validEfforts = ["low", "medium", "high", "max"];
+    if (!validEfforts.includes(options.effort)) {
+      console.error(`Error: --effort must be one of ${validEfforts.join(", ")}, got "${options.effort}"`);
       process.exit(1);
+    }
+
+    // Clamp effort to model's max output tokens
+    // Presets: low=16k, medium=32k, high=64k, max=128k
+    const MODEL_MAX_TOKENS: Record<string, number> = {
+      "opus-4-6": 128_000,
+      "sonnet-4-6": 64_000,
+      "haiku-4-5": 64_000,
+      "opus-4-5": 32_000,
+      "sonnet-4-5": 32_000,
+    };
+    const modelKey = Object.keys(MODEL_MAX_TOKENS).find((k) => options.model.includes(k));
+    const modelMaxTokens = modelKey ? MODEL_MAX_TOKENS[modelKey] : 32_000;
+    const presetTokens: Record<string, number> = { low: 16_000, medium: 32_000, high: 64_000, max: 128_000 };
+    if (presetTokens[options.effort] > modelMaxTokens) {
+      const clamped = (["low", "medium", "high", "max"] as const).filter(d => presetTokens[d] <= modelMaxTokens).pop()!;
+      console.warn(`Warning: ${options.model} supports max ${modelMaxTokens.toLocaleString()} output tokens. Clamping --effort from ${options.effort} to ${clamped}.`);
+      options.effort = clamped;
     }
 
     await runScan({
@@ -82,7 +100,7 @@ program
       protocol: options.protocol,
       invariants: options.invariants,
       include: options.include,
-      depth: options.depth as "low" | "medium" | "high" | "max" | "unlimited",
+      effort: options.effort as "low" | "medium" | "high" | "max",
     });
   });
 

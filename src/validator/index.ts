@@ -94,8 +94,9 @@ async function runValidatorForFinding(
 
 ## Environment
 
-You have a \`bash\` tool to run shell commands. The contract source is at ./target/ (symlink to the project).
-Use it to read .move files, grep for functions, trace code paths.
+You have a \`bash\` tool to run shell commands and a \`write_file\` tool to write files. The contract source is at ./target/ (symlink to the project).
+Use bash to read .move files, grep for functions, trace code paths.
+You also have \`list_references\` and \`read_reference\` tools to load detailed vulnerability pattern files if needed for deeper analysis.
 
 When you are done, write your verdict to verdict-${finding.id}.json in the current directory.`;
 
@@ -172,7 +173,7 @@ Every finding must appear exactly once. Set duplicateOf to null for canonical fi
   logStep("Deduplicating findings...");
   const response = await client.messages.create({
     model,
-    max_tokens: 4096,
+    max_tokens: 4_000,
     messages: [{ role: "user", content: prompt }],
   });
 

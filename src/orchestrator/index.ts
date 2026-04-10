@@ -16,7 +16,7 @@ import { StatusDisplay, logStep, logResult, logDetail, logWarn } from "./display
 
 const DEFAULT_MAINNET_RPC = "https://fullnode.mainnet.sui.io:443";
 
-export type DepthLevel = "low" | "medium" | "high" | "max" | "unlimited";
+export type EffortLevel = "low" | "medium" | "high" | "max";
 
 export interface ScanOptions {
   target: string;
@@ -30,11 +30,11 @@ export interface ScanOptions {
   invariants?: string[];
   outputDir?: string;
   include?: string[];
-  depth?: DepthLevel;
+  effort?: EffortLevel;
 }
 
 export async function runScan(options: ScanOptions): Promise<ScanResult> {
-  const { target, concurrency, model, maxTurns, keepContainers, network, packageId, depth } = options;
+  const { target, concurrency, model, maxTurns, keepContainers, network, packageId, effort } = options;
 
   // Set up checkpoint directory structure: .suixploit/<timestamp>/ at project root
   const projectRoot = resolve(import.meta.dirname, "../..");
@@ -52,6 +52,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     network,
     concurrency,
     maxTurns: maxTurns ?? null,
+    effort: effort ?? "medium",
     packageId: packageId ?? null,
     startedAt: new Date().toISOString(),
     completedAt: null,
@@ -108,7 +109,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
     const rankerPrompt = buildRankerPrompt(candidates);
     const rankerResponse = await client.messages.create({
       model,
-      max_tokens: 16384,
+      max_tokens: 16_000,
       messages: [{ role: "user", content: rankerPrompt }],
     });
     const rankerText = rankerResponse.content
@@ -160,7 +161,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
           const release = await sem.acquire();
           try {
             const relatedSigs = buildRelatedSignatures(mod);
-            const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId, display, relatedSigs, depth);
+            const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId, display, relatedSigs, effort);
             if (findings.length > 0) {
               allFindings.push(...findings);
             }
@@ -181,7 +182,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
           const release = await sem.acquire();
           try {
             const relatedSigs = buildRelatedSignatures(mod);
-            const findings = await runDevnetHunter(client, tracker, mod, target, paths, model, maxTurns, display, relatedSigs, depth);
+            const findings = await runDevnetHunter(client, tracker, mod, target, paths, model, maxTurns, display, relatedSigs, effort);
             if (findings.length > 0) {
               allFindings.push(...findings);
             }
@@ -263,7 +264,7 @@ async function runMainnetHunter(
   packageId: string,
   display: StatusDisplay,
   relatedModuleSignatures: string,
-  depth?: DepthLevel
+  effort?: EffortLevel
 ): Promise<Finding[]> {
   const rpcUrl = DEFAULT_MAINNET_RPC;
   const hunterPrompt = buildHunterPrompt({
@@ -296,7 +297,7 @@ async function runMainnetHunter(
     moduleName: mod.name,
     logFile: resolve(workspace, "agent.log"),
     display,
-    depth,
+    effort,
   });
 
   // Lift output files from scratch/ to workspace root
@@ -319,7 +320,7 @@ async function runDevnetHunter(
   maxTurns: number | undefined,
   display: StatusDisplay,
   relatedModuleSignatures: string,
-  depth?: DepthLevel
+  effort?: EffortLevel
 ): Promise<Finding[]> {
   logDetail(`[${mod.name}] starting container`);
 
@@ -366,7 +367,7 @@ async function runDevnetHunter(
     moduleName: mod.name,
     logFile: resolve(workspace, "agent.log"),
     display,
-    depth,
+    effort,
   });
 
   // Copy output files from container to local workspace

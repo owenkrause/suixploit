@@ -15,7 +15,7 @@ export interface HunterPromptInput {
 
 // ── Sui/Move/DeFi foundational context ─────────────────────────
 
-const FOUNDATIONAL_CONTEXT = `## Sui/Move Security Foundations
+export const FOUNDATIONAL_CONTEXT = `## Sui/Move Security Foundations
 
 ### Object Ownership & Access Control
 - **Address-owned**: only the owner can use in transactions. Fast path (no consensus, <500ms finality). Passing an owned object as a function parameter IS the access control — no separate signer check needed.
@@ -92,29 +92,14 @@ You have access to a library of detailed vulnerability pattern references via tw
 - \`read_reference\` — loads a specific reference file by name
 
 **When to use references:**
-- After your initial analysis, load relevant references to cross-check your findings against known patterns
+- After your initial analysis, load relevant references to find additional attack vectors
 - If the module involves DeFi (lending, staking, oracles, DEX), load \`defi-vectors\` first — it routes you to the right deep-dive files
 - Load \`sui-protocol-checklists\` if you can identify the protocol type (lending, AMM, vault, staking, bridge, governance, NFT, upgrade)
-- Before finalizing findings, load \`false-positive-catalog\` to verify you aren't reporting known false positives
-- If you find a potential vulnerability but aren't sure, load \`sui-patterns\` or \`common-move\` for detailed pattern matching with code examples
+- Load \`sui-patterns\` or \`common-move\` for detailed pattern matching with code examples
 
 **Do NOT** load all references upfront. Be selective based on what the module actually does. Each reference shows its approximate token size — budget accordingly.`;
 
 // ── Shared sections ──────────────────────────────────────────────
-
-const WHAT_COUNTS = `## What counts as a finding
-
-A vulnerability where an unprivileged user causes economic damage. For every finding you MUST answer:
-1. What does the attacker gain, or what damage is caused?
-2. What does the attack cost? (it must be net-profitable OR cause damage far exceeding its cost)
-3. Why can't the victim mitigate it? (consider that victims can batch operations atomically in a single PTB)
-4. Is the damage persistent or a temporary inconvenience?
-
-Do NOT report:
-- Admin misconfiguration ("admin could set a bad parameter")
-- Governance centralization or missing events
-- Theoretical bugs requiring admin key compromise
-- Griefing where attacker pays more than the damage caused`;
 
 function buildSdkReference(
   network: "devnet" | "mainnet",
@@ -319,8 +304,8 @@ Update after each hypothesis. This is how we measure analysis quality.
 }]
 \`\`\`
 
-### findings.json — only exploitable vulnerabilities with working exploits
-Leave EMPTY unless you have a confirmed exploit. Do NOT pad with weak findings.
+### findings.json — vulnerabilities with working exploits
+Leave EMPTY unless you have a confirmed exploit.
 \`\`\`json
 [{
   "id": "unique-id",
@@ -358,12 +343,11 @@ Read the module source carefully. Using the foundational knowledge below, develo
 - What assumptions does the code make that an attacker could violate?
 
 ### Phase 2: Reference Cross-Check
-After forming your initial hypotheses, use the reference tools to:
+After forming your initial hypotheses, use the reference tools to find additional attack vectors:
 1. Load relevant pattern files and check if known attack patterns apply to what you're seeing
 2. For DeFi modules, load \`defi-vectors\` first, then the appropriate deep-dive file(s)
-3. Before finalizing, load \`false-positive-catalog\` — verify each finding against known FP traps
 
-Do NOT skip Phase 1. Reference patterns are a safety net for validation, not a substitute for reasoning.
+Do NOT skip Phase 1. Reference patterns supplement your analysis, not replace it.
 
 ## Target
 Module: ${input.moduleName}
@@ -380,8 +364,6 @@ ${input.moduleSource}
 \`\`\`
 ${relatedSection}
 ${FOUNDATIONAL_CONTEXT}
-
-${WHAT_COUNTS}
 
 ${REFERENCE_TOOLS_SECTION}
 

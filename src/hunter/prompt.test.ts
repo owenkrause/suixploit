@@ -139,7 +139,22 @@ describe("buildHunterPrompt", () => {
     });
     expect(prompt).toContain("list_references");
     expect(prompt).toContain("read_reference");
-    expect(prompt).toContain("false-positive-catalog");
+  });
+
+  it("does NOT contain validation criteria (owned by validator)", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).not.toContain("What counts as a finding");
   });
 
   it("contains two-phase hunting methodology", () => {
