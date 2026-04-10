@@ -12,15 +12,14 @@ The Mythos evaluation showed that a multi-agent scaffold with hypothesis generat
 
 The Mythos scaffold works in four stages: hypothesis generation, empirical validation, exploit development, and secondary review. Suixploit mirrors this:
 
-| Mythos scaffold                              | Suixploit                                                                                              |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| File prioritization (1-5 severity rating)    | **Ranker agent** scores modules by attack surface, entry points, fund flows                            |
-| Parallel agent invocations per file          | **Hunter agents** run concurrently per module with isolated workspaces                                 |
-| Source code reading + instrumented execution | Agents read Move source + execute transactions against local devnet or dry-run against mainnet         |
+| Mythos scaffold                              | Suixploit                                                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| File prioritization (1-5 severity rating)    | **Ranker agent** scores modules by attack surface, entry points, fund flows                             |
+| Parallel agent invocations per file          | **Hunter agents** run concurrently per module with isolated workspaces                                  |
+| Source code reading + instrumented execution | Agents read Move source + execute transactions against local devnet or dry-run against mainnet          |
 | Containerized isolation per target           | Each hunter gets its own Docker container (devnet) or isolated workspace (mainnet) with funded accounts |
-| Crash oracle (AddressSanitizer, fuzzer)      | **Oracle** confirms exploits deterministically — balance changes, ownership violations, abort signals  |
-| Secondary review for severity validation     | **Validator agents** independently re-analyze each finding, reject false positives, calibrate severity |
-| Professional contractor review               | **Deduplication** pass groups findings by root cause, picks best writeup per group                     |
+| Crash oracle (AddressSanitizer, fuzzer)      | **Oracle** confirms exploits deterministically — balance changes, ownership violations, abort signals   |
+| Secondary review for severity validation     | **Validator agents** independently re-analyze each finding, reject false positives, calibrate severity  |
 
 ## Architecture
 
@@ -98,7 +97,7 @@ Options:
 - `--model <model>` — Model for agents (default: claude-opus-4-6)
 - `--max-turns <n>` — Max turns per hunter agent
 - `--include <patterns...>` — Only hunt modules matching these substrings
-- `--output <path>` — Write results to file (default: stdout)
+- `--output <path>` — Override run output directory (default: `.suixploit/<timestamp>/`)
 - `--keep-containers` — Keep Docker containers after devnet runs
 - `--network <network>` — `devnet` or `mainnet`
 
@@ -128,12 +127,12 @@ It explicitly does **not** report admin misconfiguration, governance centralizat
 ```
 src/
   cli.ts              CLI entry point
-  orchestrator/       Agent loop, display, concurrency, workspace isolation
-  hunter/             Hunter agent prompt templates
+  types.ts            Shared interfaces
+  pipeline.ts         Module resolution helpers
+  orchestrator/       Agent loop, display, concurrency, Docker, workspace isolation
+  hunter/             Hunter agent prompt construction
   ranker/             Module scoring by attack surface
   validator/          Independent finding re-analysis
-  oracle/             Deterministic exploit confirmation (devnet)
-  pipeline.ts         Module resolution helpers
-  devnet/             Local devnet lifecycle (Docker)
-contracts/examples/   Intentionally vulnerable test contracts
+  oracle/             Deterministic exploit confirmation
+contracts/examples/   Intentionally vulnerable test contracts (easy/medium/hard)
 ```
