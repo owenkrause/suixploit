@@ -15,6 +15,7 @@ Options:
 - `--concurrency <n>` — Max parallel agents (default: 5)
 - `--model <model>` — Model for agents (default: claude-opus-4-6)
 - `--max-turns <n>` — Max turns per hunter agent (default: unlimited)
+- `--effort <level>` — Agent thinking effort: `low`, `medium` (default), `high`, `max`. Auto-clamped to model's max output tokens.
 - `--include <patterns...>` — Only hunt modules matching these substrings
 - `--keep-containers` — Keep Docker containers after devnet runs
 - `--output <path>` — Override output directory
@@ -75,6 +76,7 @@ src/
   cli.ts                 # CLI entry point
   pipeline.ts            # module resolution helpers
   types.ts               # shared interfaces (Finding, ScanResult, ScanMeta, etc.)
+  references.ts          # reference catalog + list/read helpers for agent tools
   orchestrator/
     index.ts             # main scan pipeline, hunter dispatch
     agent.ts             # agent loop (tool calls, retries, display)
@@ -86,10 +88,13 @@ src/
     tracker.ts           # container cleanup
   hunter/
     index.ts             # re-exports from prompt.ts
-    prompt.ts            # unified hunter prompt builder (both networks)
+    prompt.ts            # hunter prompt (foundational context, two-phase methodology, SDK, oracle)
   ranker/                # module scoring by attack surface
-  validator/             # independent finding re-analysis
+  validator/
+    index.ts             # validator orchestration, deduplication
+    prompt.ts            # validator prompt (foundational context, FP catalog, severity criteria)
   oracle/                # deterministic exploit confirmation (CLI tool, works on both networks)
+references/              # curated vulnerability patterns, FP catalog, attack vectors, DeFi deep-dives
 contracts/examples/      # intentionally vulnerable test contracts
 ```
 
@@ -116,6 +121,15 @@ Both sections are optional. Can also be overridden via `--protocol` and `--invar
 - `medium/flash_loan_misuse` — flash loan repay doesn't verify source
 - `hard/shared_object_race` — auction settle/bid race condition
 - `hard/otw_abuse` — unprotected mint on shared treasury cap
+
+## Agent Tools
+
+All agents (hunters and validators) have access to these tools via `runAgent()`:
+
+- `bash` — run shell commands
+- `write_file` — write files via base64 (avoids bash escaping issues for JSON/TS)
+- `list_references` — list available reference files with descriptions
+- `read_reference` — load a specific reference file by name
 
 ## Commands
 
