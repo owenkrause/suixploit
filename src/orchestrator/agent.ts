@@ -2,10 +2,19 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { type StatusDisplay, c } from "./display.js";
 import { listReferences, readReference } from "../references.js";
+import type { DepthLevel } from "./index.js";
 
 const MAX_RETRIES = 5;
 const TOOL_OUTPUT_LIMIT = 50_000;
 const LOG_OUTPUT_LIMIT = 5_000;
+
+const DEPTH_PRESETS: Record<DepthLevel, { thinkingBudget: number; maxTokens: number }> = {
+  low:       { thinkingBudget: 8_000,   maxTokens: 8_192 },
+  medium:    { thinkingBudget: 16_000,  maxTokens: 16_384 },
+  high:      { thinkingBudget: 64_000,  maxTokens: 32_768 },
+  max:       { thinkingBudget: 128_000, maxTokens: 32_768 },
+  unlimited: { thinkingBudget: 500_000, maxTokens: 65_536 },
+};
 
 export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
@@ -17,7 +26,7 @@ export interface AgentOptions {
   moduleName: string;
   logFile?: string;
   display?: StatusDisplay;
-  thinkingBudget?: number;
+  depth?: DepthLevel;
 }
 
 export interface AgentResult {
@@ -143,7 +152,8 @@ export async function runAgent(
   client: Anthropic,
   options: AgentOptions
 ): Promise<AgentResult> {
-  const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display, thinkingBudget = 16000 } = options;
+  const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display, depth = "medium" } = options;
+  const { thinkingBudget, maxTokens } = DEPTH_PRESETS[depth];
   const tools = [buildToolDefinition(), ...buildReferenceTools()];
 
   // Initialize log file with system prompt
@@ -198,7 +208,7 @@ export async function runAgent(
       try {
         response = await client.messages.create({
           model,
-          max_tokens: 16384,
+          max_tokens: maxTokens,
           ...(thinkingBudget > 0 ? {
             thinking: { type: "enabled" as const, budget_tokens: thinkingBudget },
           } : {}),

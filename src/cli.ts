@@ -35,6 +35,7 @@ program
   .option("--protocol <description>", "Protocol description override")
   .option("--invariants <invariants...>", "Invariants to test against")
   .option("--include <patterns...>", "Only hunt modules whose names contain these strings (all modules still available as cross-module context)")
+  .option("--depth <level>", "Agent thinking depth: low, medium, high, max, unlimited", "medium")
   .action(async (target: string, options) => {
     // Validate target exists
     if (!existsSync(target)) {
@@ -62,6 +63,13 @@ program
     const concurrency = parsePositiveInt(options.concurrency, "--concurrency");
     const maxTurns = options.maxTurns ? parsePositiveInt(options.maxTurns, "--max-turns") : undefined;
 
+    // Validate depth
+    const validDepths = ["low", "medium", "high", "max", "unlimited"];
+    if (!validDepths.includes(options.depth)) {
+      console.error(`Error: --depth must be one of ${validDepths.join(", ")}, got "${options.depth}"`);
+      process.exit(1);
+    }
+
     await runScan({
       target,
       concurrency,
@@ -74,6 +82,7 @@ program
       protocol: options.protocol,
       invariants: options.invariants,
       include: options.include,
+      depth: options.depth as "low" | "medium" | "high" | "max" | "unlimited",
     });
   });
 

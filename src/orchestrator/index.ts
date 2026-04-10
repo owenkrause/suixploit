@@ -16,6 +16,8 @@ import { StatusDisplay, logStep, logResult, logDetail, logWarn } from "./display
 
 const DEFAULT_MAINNET_RPC = "https://fullnode.mainnet.sui.io:443";
 
+export type DepthLevel = "low" | "medium" | "high" | "max" | "unlimited";
+
 export interface ScanOptions {
   target: string;
   concurrency: number;
@@ -28,10 +30,11 @@ export interface ScanOptions {
   invariants?: string[];
   outputDir?: string;
   include?: string[];
+  depth?: DepthLevel;
 }
 
 export async function runScan(options: ScanOptions): Promise<ScanResult> {
-  const { target, concurrency, model, maxTurns, keepContainers, network, packageId } = options;
+  const { target, concurrency, model, maxTurns, keepContainers, network, packageId, depth } = options;
 
   // Set up checkpoint directory structure: .suixploit/<timestamp>/ at project root
   const projectRoot = resolve(import.meta.dirname, "../..");
@@ -157,7 +160,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
           const release = await sem.acquire();
           try {
             const relatedSigs = buildRelatedSignatures(mod);
-            const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId, display, relatedSigs);
+            const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId, display, relatedSigs, depth);
             if (findings.length > 0) {
               allFindings.push(...findings);
             }
@@ -178,7 +181,7 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
           const release = await sem.acquire();
           try {
             const relatedSigs = buildRelatedSignatures(mod);
-            const findings = await runDevnetHunter(client, tracker, mod, target, paths, model, maxTurns, display, relatedSigs);
+            const findings = await runDevnetHunter(client, tracker, mod, target, paths, model, maxTurns, display, relatedSigs, depth);
             if (findings.length > 0) {
               allFindings.push(...findings);
             }
@@ -259,7 +262,8 @@ async function runMainnetHunter(
   maxTurns: number | undefined,
   packageId: string,
   display: StatusDisplay,
-  relatedModuleSignatures: string
+  relatedModuleSignatures: string,
+  depth?: DepthLevel
 ): Promise<Finding[]> {
   const rpcUrl = DEFAULT_MAINNET_RPC;
   const hunterPrompt = buildHunterPrompt({
@@ -292,6 +296,7 @@ async function runMainnetHunter(
     moduleName: mod.name,
     logFile: resolve(workspace, "agent.log"),
     display,
+    depth,
   });
 
   // Lift output files from scratch/ to workspace root
@@ -313,7 +318,8 @@ async function runDevnetHunter(
   model: string,
   maxTurns: number | undefined,
   display: StatusDisplay,
-  relatedModuleSignatures: string
+  relatedModuleSignatures: string,
+  depth?: DepthLevel
 ): Promise<Finding[]> {
   logDetail(`[${mod.name}] starting container`);
 
@@ -360,6 +366,7 @@ async function runDevnetHunter(
     moduleName: mod.name,
     logFile: resolve(workspace, "agent.log"),
     display,
+    depth,
   });
 
   // Copy output files from container to local workspace
