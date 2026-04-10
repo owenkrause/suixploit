@@ -13,27 +13,92 @@ export interface HunterPromptInput {
   userAddress?: string;
 }
 
-// ── Sui platform context ────────────────────────────────────────
+// ── Sui/Move/DeFi foundational context ─────────────────────────
 
-const SUI_CONTEXT = `## Sui platform — security-relevant properties
+const FOUNDATIONAL_CONTEXT = `## Sui/Move Security Foundations
 
-### Object ownership
-- Address-owned: only the owner can use in transactions. Processed via fast path (no consensus, <500ms finality).
-- Shared: anyone can reference in transactions. Must go through consensus for ordering. All access control must be implemented in Move code.
-- Immutable: cannot be mutated or deleted. No contention.
+### Object Ownership & Access Control
+- **Address-owned**: only the owner can use in transactions. Fast path (no consensus, <500ms finality). Passing an owned object as a function parameter IS the access control — no separate signer check needed.
+- **Shared**: anyone can reference in transactions. Must go through consensus for ordering. ALL access control must be implemented in Move code — there is no implicit owner gate.
+- **Immutable**: cannot be mutated or deleted. No contention.
+- **Wrapped**: objects stored inside other objects. Not directly accessible — must unwrap first. Can be used to hide state or create escrow patterns.
+- **Dynamic fields**: key-value storage on objects. Namespace collisions possible if keys aren't unique. Orphaned dynamic fields persist after parent deletion.
 
-### Programmable Transaction Blocks (PTBs)
-Up to 1,024 commands execute sequentially in ONE atomic transaction. If any command fails, all effects revert. Results from earlier commands can be passed as inputs to later ones. This means users can batch complex multi-step operations (e.g. withdraw + repay + claim) atomically.
+### Capability Pattern
+The primary access gate on Sui. If a function takes \`&AdminCap\` (owned), only the cap holder can call it.
+- Capabilities with \`copy\` ability are dangerous: allows duplication, breaking uniqueness assumptions.
+- Capabilities with \`store\` ability can be wrapped/transferred outside protocol control.
+- Capabilities should typically have only \`key\` (or \`key, store\` if intentionally transferable).
+- Check for consistency: if function A requires AdminCap but function B doing similar privileged work does not, that's a finding.
 
-### Transaction ordering
-- Sui has no public mempool. Transactions are sent directly to validators.
-- Shared-object transactions are ordered by Mysticeti consensus (DAG-based). Validators collectively determine ordering — there is no single block proposer who controls tx order.
-- Owned-object transactions bypass consensus entirely.
+### Witness & One-Time Witness (OTW)
+- Witness pattern: struct with only \`drop\` proves type ownership. Must NOT have \`copy\`.
+- OTW: created once in \`init()\`, consumed immediately. Has uppercase module name. Must have \`drop\` only.
+- If a witness type has \`copy\`, it can be duplicated to bypass one-time guarantees.
 
-### Move safety
-- Integer overflow/underflow aborts by default (no wrapping arithmetic).
-- Resources without \`drop\` must be consumed.
-- \`public(friend)\` restricts callers to declared friend modules.`;
+### Ability System
+- \`key\`: object can be stored in global storage, has an \`id: UID\` field.
+- \`store\`: can be stored inside other objects or transferred freely.
+- \`copy\`: can be duplicated. Dangerous for capabilities, witnesses, or anything representing unique authority.
+- \`drop\`: can be silently destroyed. Without \`drop\`, a value MUST be explicitly consumed (hot potato pattern).
+- Linear types (no \`copy\` + no \`drop\`) enforce exactly-once consumption — used for flash loan receipts.
+- \`Coin<T>\` has no \`copy\` — linear types prevent double-spend at the type system level.
+
+### PTBs (Programmable Transaction Blocks)
+- Up to 1,024 commands execute sequentially in ONE atomic transaction.
+- Results from earlier commands can be inputs to later ones — enables composing arbitrary multi-step attacks atomically.
+- If any command fails, ALL effects revert.
+- \`public fun\` (not just \`entry\`) are PTB-callable. Attackers can call any public function, not just entry points.
+- \`entry fun\` can only appear as the entry point of a PTB command (cannot chain results).
+- **State inconsistency within PTBs**: if function A partially updates a shared object, function B in the same PTB sees the intermediate state. This enables attacks where per-call limits are bypassed by calling N times (e.g. close factor bypass via repeated liquidation in one PTB).
+- Flash loans via PTBs: deposit → manipulate → withdraw atomically, with no hot potato needed if the protocol doesn't enforce it.
+
+### Transaction Ordering
+- No public mempool. Transactions are sent directly to validators.
+- Shared-object transactions are ordered by Mysticeti consensus (DAG-based). No single block proposer controls order — front-running requires validator collusion.
+- Owned-object transactions bypass consensus entirely (fast path).
+- Race conditions between concurrent shared-object transactions ARE possible — order is non-deterministic.
+
+### Move Type System Security
+- **Integer overflow/underflow aborts by default** (no wrapping arithmetic). This is DoS, not corruption.
+  BUT: if overflow occurs in an accumulator/reward update BEFORE a checkpoint write, the transaction aborts, the checkpoint never advances, and the time delta grows — causing PERMANENT deadlock on retry. This is the **abort-before-checkpoint pattern**, the #1 missed Critical/High bug class in Move audits.
+- No dynamic dispatch, no callbacks, no reentrancy in the Solidity sense.
+- Generics are monomorphized at compile time. Types must satisfy ability constraints.
+- \`public(package)\` restricts callers to the same package — but within a package, all modules can call each other.
+- Division truncates toward zero. Precision loss in integer division is real and exploitable (especially in share/rate calculations).
+
+### DeFi Security Primitives
+- **Oracle manipulation**: spot price derived from pool ratio is flash-loan manipulable. Require TWAP/EMA with staleness checks + confidence intervals.
+- **Flash loans**: hot potato pattern (no drop/store/copy/key) guarantees same-tx repayment. Verify the receipt struct actually lacks all four abilities. If it has any, the flash loan can be circumvented.
+- **Share/rate math**: first-depositor inflation attacks when vault starts at 0 shares. Check initial share minting, rounding direction (should favor the protocol), and dead share mechanisms.
+- **Accumulator patterns**: reward_per_share, interest indices, checkpoint timestamps. If these overflow or skip updates on certain code paths, accounting diverges permanently.
+- **Slippage**: any swap/withdrawal without min_amount_out is sandwich-attackable.
+- **Pause symmetry**: pausing borrow without unblocking liquidation creates bad debt. Pausing repay locks user funds.
+
+### Key False Positive Traps
+- Owned object parameter = access control. Don't report "missing auth check" when a function takes an owned capability.
+- Move overflow = abort, not corruption. Only report if attacker profits from DoS or if abort-before-checkpoint bricks state.
+- Linear types prevent double-spend (\`Coin<T>\` has no \`copy\`).
+- Hot potato is compiler-enforced — no runtime bypass is possible.
+- "Pattern looks dangerous" is not analysis. Trace the actual data flow and write the exact PTB exploit sequence. If you can't write the exploit, it probably doesn't exist.`;
+
+// ── Reference tools section ─────────────────────────────────────
+
+const REFERENCE_TOOLS_SECTION = `## Reference Library
+
+You have access to a library of detailed vulnerability pattern references via two tools:
+
+- \`list_references\` — shows all available reference files with descriptions and approximate token sizes
+- \`read_reference\` — loads a specific reference file by name
+
+**When to use references:**
+- After your initial analysis, load relevant references to cross-check your findings against known patterns
+- If the module involves DeFi (lending, staking, oracles, DEX), load \`defi-vectors\` first — it routes you to the right deep-dive files
+- Load \`sui-protocol-checklists\` if you can identify the protocol type (lending, AMM, vault, staking, bridge, governance, NFT, upgrade)
+- Before finalizing findings, load \`false-positive-catalog\` to verify you aren't reporting known false positives
+- If you find a potential vulnerability but aren't sure, load \`sui-patterns\` or \`common-move\` for detailed pattern matching with code examples
+
+**Do NOT** load all references upfront. Be selective based on what the module actually does. Each reference shows its approximate token size — budget accordingly.`;
 
 // ── Shared sections ──────────────────────────────────────────────
 
@@ -282,6 +347,24 @@ export function buildHunterPrompt(input: HunterPromptInput): string {
 
   return `You are a smart contract security researcher. Find vulnerabilities in this Sui Move module that an unprivileged attacker can exploit for economic gain or to cause permanent, unmitigable damage to other users.
 
+## Methodology — Two-Phase Hunting
+
+### Phase 1: Independent Analysis
+Read the module source carefully. Using the foundational knowledge below, develop vulnerability hypotheses from first principles. Think about:
+- What does each public/entry function do? Who can call it? What objects does it take?
+- What are the shared objects? What invariants must they maintain?
+- Where does value flow? Can an attacker redirect, amplify, or destroy it?
+- Are there cross-function state dependencies exploitable within a single PTB?
+- What assumptions does the code make that an attacker could violate?
+
+### Phase 2: Reference Cross-Check
+After forming your initial hypotheses, use the reference tools to:
+1. Load relevant pattern files and check if known attack patterns apply to what you're seeing
+2. For DeFi modules, load \`defi-vectors\` first, then the appropriate deep-dive file(s)
+3. Before finalizing, load \`false-positive-catalog\` — verify each finding against known FP traps
+
+Do NOT skip Phase 1. Reference patterns are a safety net for validation, not a substitute for reasoning.
+
 ## Target
 Module: ${input.moduleName}
 Package ID: ${input.packageId}${input.network === "mainnet" ? `\nRPC: ${input.rpcUrl}` : ""}
@@ -296,9 +379,11 @@ ${invariantList || "- None specified"}
 ${input.moduleSource}
 \`\`\`
 ${relatedSection}
-${SUI_CONTEXT}
+${FOUNDATIONAL_CONTEXT}
 
 ${WHAT_COUNTS}
+
+${REFERENCE_TOOLS_SECTION}
 
 ${buildSdkReference(input.network, input.rpcUrl, input.packageId, input.attackerAddress)}
 

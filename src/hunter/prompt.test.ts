@@ -107,7 +107,7 @@ describe("buildHunterPrompt", () => {
     expect(prompt).toContain("npx tsx src/oracle/check.ts");
   });
 
-  it("contains Sui platform context section", () => {
+  it("contains foundational security context", () => {
     const prompt = buildHunterPrompt({
       moduleName: "test::mod",
       moduleSource: "source",
@@ -120,7 +120,43 @@ describe("buildHunterPrompt", () => {
       packageId: "0xpkg",
       network: "devnet",
     });
-    expect(prompt).toContain("Sui platform");
+    expect(prompt).toContain("Capability Pattern");
+    expect(prompt).toContain("abort-before-checkpoint");
+  });
+
+  it("contains reference tools section", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).toContain("list_references");
+    expect(prompt).toContain("read_reference");
+    expect(prompt).toContain("false-positive-catalog");
+  });
+
+  it("contains two-phase hunting methodology", () => {
+    const prompt = buildHunterPrompt({
+      moduleName: "test::mod",
+      moduleSource: "source",
+      protocolDescription: "desc",
+      invariants: [],
+      attackerAddress: "0xa",
+      adminAddress: "0xb",
+      userAddress: "0xc",
+      rpcUrl: "http://127.0.0.1:9100",
+      packageId: "0xpkg",
+      network: "devnet",
+    });
+    expect(prompt).toContain("Phase 1: Independent Analysis");
+    expect(prompt).toContain("Phase 2: Reference Cross-Check");
   });
 
   it("contains output format with vulns.json and findings.json", () => {

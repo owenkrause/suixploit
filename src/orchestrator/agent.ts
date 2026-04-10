@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { type StatusDisplay, c } from "./display.js";
+import { listReferences, readReference } from "../references.js";
 
 const MAX_RETRIES = 5;
 const TOOL_OUTPUT_LIMIT = 50_000;
@@ -44,6 +45,37 @@ export function buildToolDefinition(): Anthropic.Tool {
       required: ["command"],
     },
   };
+}
+
+export function buildReferenceTools(): Anthropic.Tool[] {
+  return [
+    {
+      name: "list_references",
+      description:
+        "List all available security reference files with descriptions and approximate sizes. Use this to find relevant vulnerability patterns, DeFi deep-dives, or methodology guides for the module you are analyzing.",
+      input_schema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+    {
+      name: "read_reference",
+      description:
+        "Read a security reference file by name. Returns the full content of a specific reference (vulnerability patterns, DeFi deep-dives, false positive catalog, agent methodologies, etc.).",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "The reference name (e.g. 'sui-patterns', 'defi-lending', 'false-positive-catalog'). Use list_references to see available names.",
+          },
+        },
+        required: ["name"],
+      },
+    },
+  ];
 }
 
 export function buildSystemPrompt(
@@ -112,7 +144,7 @@ export async function runAgent(
   options: AgentOptions
 ): Promise<AgentResult> {
   const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display, thinkingBudget = 16000 } = options;
-  const tool = buildToolDefinition();
+  const tools = [buildToolDefinition(), ...buildReferenceTools()];
 
   // Initialize log file with system prompt
   if (logFile) {
@@ -171,7 +203,7 @@ export async function runAgent(
             thinking: { type: "enabled" as const, budget_tokens: thinkingBudget },
           } : {}),
           system: systemPrompt,
-          tools: [tool],
+          tools,
           messages,
         });
         break;
@@ -214,7 +246,10 @@ export async function runAgent(
     for (const block of response.content) {
       if (block.type === "thinking") log(`\n### Thinking (internal)\n${(block as unknown as Record<string, unknown>).thinking ?? ""}\n`);
       else if (block.type === "text") log(`\n### Response\n${block.text}\n`);
-      else if (block.type === "tool_use") log(`\n### Tool: ${(block.input as { command: string }).command}\n`);
+      else if (block.type === "tool_use") {
+        if (block.name === "bash") log(`\n### Tool: bash — ${(block.input as { command: string }).command}\n`);
+        else log(`\n### Tool: ${block.name}(${JSON.stringify(block.input)})\n`);
+      }
     }
 
     if (response.stop_reason !== "tool_use") {
@@ -237,29 +272,36 @@ export async function runAgent(
 
     // Status: show what commands are running
     const cmdSummary = toolUseBlocks.map((b) => {
+      if (b.name === "list_references") return "list_references";
+      if (b.name === "read_reference") return `ref:${(b.input as { name: string }).name}`;
       const cmd = (b.input as { command: string }).command;
-      const base = cmd.split(/[|\s]/)[0];
-      return base;
+      return cmd.split(/[|\s]/)[0];
     }).join(", ");
     status(turns, totalTokens, cmdSummary);
 
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
-        const input = block.input as { command: string };
+        let output: string;
 
-        const result = await exec(input.command);
-        const output = [result.stdout, result.stderr]
-          .filter(Boolean)
-          .join("\n")
-          .slice(0, TOOL_OUTPUT_LIMIT);
+        if (block.name === "list_references") {
+          output = listReferences();
+        } else if (block.name === "read_reference") {
+          output = readReference((block.input as { name: string }).name);
+        } else {
+          // bash
+          const input = block.input as { command: string };
+          const result = await exec(input.command);
+          output = [result.stdout, result.stderr]
+            .filter(Boolean)
+            .join("\n")
+            .slice(0, TOOL_OUTPUT_LIMIT);
 
-        // Log command failures to file only — not as persistent display messages
-        // (failed commands are normal agent behavior, not worth surfacing)
-        if (result.exitCode !== 0) {
-          log(`\n### Command failed (exit ${result.exitCode})\n`);
+          if (result.exitCode !== 0) {
+            log(`\n### Command failed (exit ${result.exitCode})\n`);
+          }
         }
 
-        log(`\n### Result (exit ${result.exitCode})\n\`\`\`\n${output.slice(0, LOG_OUTPUT_LIMIT)}\n\`\`\`\n`);
+        log(`\n### Result\n\`\`\`\n${output.slice(0, LOG_OUTPUT_LIMIT)}\n\`\`\`\n`);
 
         return {
           type: "tool_result" as const,

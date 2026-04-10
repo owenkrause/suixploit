@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Semaphore } from "./semaphore.js";
 import { ResourceTracker } from "./tracker.js";
-import { buildToolDefinition, buildSystemPrompt, buildMainnetSystemPrompt } from "./agent.js";
+import { buildToolDefinition, buildReferenceTools, buildSystemPrompt, buildMainnetSystemPrompt } from "./agent.js";
 import { generateRunId, buildScanPaths, safeName, hunterWorkspace, hunterScratch } from "./paths.js";
 import { makeLocalExec } from "./exec.js";
 
@@ -75,6 +75,16 @@ describe("buildToolDefinition", () => {
     const tool = buildToolDefinition();
     expect(tool.name).toBe("bash");
     expect(tool.input_schema.properties).toHaveProperty("command");
+  });
+});
+
+describe("buildReferenceTools", () => {
+  it("returns list_references and read_reference tools", () => {
+    const tools = buildReferenceTools();
+    expect(tools).toHaveLength(2);
+    expect(tools[0].name).toBe("list_references");
+    expect(tools[1].name).toBe("read_reference");
+    expect(tools[1].input_schema.properties).toHaveProperty("name");
   });
 });
 
