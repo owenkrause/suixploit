@@ -138,5 +138,6 @@ src/
   ranker/             Module scoring by attack surface
   validator/          Independent finding re-analysis
   oracle/             Deterministic exploit confirmation
+references/           Curated vulnerability patterns, DeFi deep-dives, formal verification guides
 contracts/examples/   Intentionally vulnerable test contracts (easy/medium/hard)
 ```
