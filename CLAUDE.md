@@ -121,6 +121,7 @@ Both sections are optional. Can also be overridden via `--protocol` and `--invar
 - `medium/flash_loan_misuse` — flash loan repay doesn't verify source
 - `hard/shared_object_race` — auction settle/bid race condition
 - `hard/otw_abuse` — unprotected mint on shared treasury cap
+- `hard/concentrated_pool` — flawed overflow guard in math library lets attacker add liquidity for free
 
 ## Agent Tools
 

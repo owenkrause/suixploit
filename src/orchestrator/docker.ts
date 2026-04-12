@@ -3,9 +3,17 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export async function buildImage(dockerfilePath: string, contextPath: string): Promise<void> {
-  console.error("Building suixploit-hunter image...");
-  const proc = spawn("docker", ["build", "-t", "suixploit-hunter", "-f", dockerfilePath, contextPath], {
+async function imageExists(name: string): Promise<boolean> {
+  try {
+    await execFileAsync("docker", ["image", "inspect", name]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function buildDockerImage(tag: string, dockerfilePath: string, contextPath: string): Promise<void> {
+  const proc = spawn("docker", ["build", "-t", tag, "-f", dockerfilePath, contextPath], {
     stdio: ["ignore", "ignore", "pipe"],
   });
 
@@ -21,7 +29,20 @@ export async function buildImage(dockerfilePath: string, contextPath: string): P
     });
     proc.on("error", reject);
   });
+}
 
+export async function buildImage(dockerfilePath: string, contextPath: string): Promise<void> {
+  // Build the base toolchain image if it doesn't exist yet.
+  // This is slow (~10min) but only happens once.
+  if (!(await imageExists("suixploit-base"))) {
+    const basefile = dockerfilePath.replace(/Dockerfile$/, "Dockerfile.base");
+    console.error("Building suixploit-base image (first time only — this takes a while)...");
+    await buildDockerImage("suixploit-base", basefile, contextPath);
+    console.error("Base image built.");
+  }
+
+  console.error("Building suixploit-hunter image...");
+  await buildDockerImage("suixploit-hunter", dockerfilePath, contextPath);
   console.error("Image built successfully.");
 }
 

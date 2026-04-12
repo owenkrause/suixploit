@@ -1,44 +1,7 @@
-FROM ubuntu:24.04
+# suixploit-hunter: Fast builds on top of the base toolchain image.
+# Requires: docker build -f Dockerfile.base -t suixploit-base .  (once)
+FROM suixploit-base
 
-# Prevent interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-  curl \
-  git \
-  jq \
-  build-essential \
-  pkg-config \
-  libssl-dev \
-  && rm -rf /var/lib/apt/lists/*
-
-# Install Sui CLI (devnet binary from GitHub releases, arch-aware)
-RUN set -eux; \
-  ARCH=$(uname -m); \
-  case "$ARCH" in \
-    x86_64)  SUI_ARCH="ubuntu-x86_64" ;; \
-    aarch64) SUI_ARCH="ubuntu-aarch64" ;; \
-    *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
-  esac; \
-  SUI_VERSION=$(curl -s "https://api.github.com/repos/MystenLabs/sui/releases" \
-    | jq -r '[.[] | select(.tag_name | startswith("devnet-"))][0].tag_name'); \
-  echo "Installing Sui $SUI_VERSION for $SUI_ARCH"; \
-  curl -fsSL "https://github.com/MystenLabs/sui/releases/download/${SUI_VERSION}/sui-${SUI_VERSION}-${SUI_ARCH}.tgz" \
-    -o /tmp/sui.tgz; \
-  tar -xzf /tmp/sui.tgz -C /usr/local/bin; \
-  rm /tmp/sui.tgz; \
-  sui --version
-
-# Install Node.js 22
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-  && apt-get install -y nodejs \
-  && rm -rf /var/lib/apt/lists/*
-
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
-# Set up workspace
 WORKDIR /workspace
 
 # Copy package files and install dependencies

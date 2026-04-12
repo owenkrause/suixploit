@@ -1,0 +1,5 @@
+[package]
+name = "concentrated_pool"
+edition = "2024"
+
+[dependencies]

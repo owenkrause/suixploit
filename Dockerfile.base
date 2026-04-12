@@ -1,0 +1,82 @@
+# suixploit-base: Heavy toolchain image (Sui CLI + sui-prover + Boogie + Z3 + Node)
+# Rebuild only when bumping tool versions:
+#   docker build -f Dockerfile.base -t suixploit-base .
+
+# ── Stage 1: Build sui-prover + Boogie from source ──────────────
+FROM ubuntu:24.04 AS prover-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+  curl git build-essential pkg-config libssl-dev \
+  dotnet-sdk-8.0 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build sui-prover
+RUN git clone --depth 1 https://github.com/asymptotic-code/sui-prover.git /tmp/sui-prover \
+  && cd /tmp/sui-prover \
+  && cargo install --locked --path ./crates/sui-prover --root /opt/prover
+
+# Build Boogie
+RUN git clone --depth 1 https://github.com/boogie-org/boogie.git /tmp/boogie \
+  && cd /tmp/boogie \
+  && dotnet build Source/Boogie.sln -c Release \
+  && mkdir -p /opt/prover/boogie \
+  && cp -r Source/BoogieDriver/bin/Release/net8.0/* /opt/prover/boogie/
+
+# ── Stage 2: Runtime base image ─────���───────────────────────────
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies + Z3 + .NET runtime (for Boogie)
+RUN apt-get update && apt-get install -y \
+  curl \
+  git \
+  jq \
+  build-essential \
+  pkg-config \
+  libssl-dev \
+  z3 \
+  dotnet-runtime-8.0 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy prover binaries from build stage
+COPY --from=prover-builder /opt/prover/bin/sui-prover /usr/local/bin/sui-prover
+COPY --from=prover-builder /opt/prover/boogie/ /opt/prover/boogie/
+RUN ln -s /opt/prover/boogie/BoogieDriver /usr/local/bin/boogie
+
+# Set prover environment variables
+ENV BOOGIE_EXE=/usr/local/bin/boogie
+ENV Z3_EXE=/usr/bin/z3
+
+# Install Sui CLI (devnet binary from GitHub releases, arch-aware)
+RUN set -eux; \
+  ARCH=$(uname -m); \
+  case "$ARCH" in \
+    x86_64)  SUI_ARCH="ubuntu-x86_64" ;; \
+    aarch64) SUI_ARCH="ubuntu-aarch64" ;; \
+    *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
+  esac; \
+  SUI_VERSION=$(curl -s "https://api.github.com/repos/MystenLabs/sui/releases" \
+    | jq -r '[.[] | select(.tag_name | startswith("devnet-"))][0].tag_name'); \
+  echo "Installing Sui $SUI_VERSION for $SUI_ARCH"; \
+  curl -fsSL "https://github.com/MystenLabs/sui/releases/download/${SUI_VERSION}/sui-${SUI_VERSION}-${SUI_ARCH}.tgz" \
+    -o /tmp/sui.tgz; \
+  tar -xzf /tmp/sui.tgz -C /usr/local/bin; \
+  rm /tmp/sui.tgz; \
+  sui --version
+
+# Install Node.js 22
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get install -y nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /workspace
