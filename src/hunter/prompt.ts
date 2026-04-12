@@ -66,6 +66,12 @@ The primary access gate on Sui. If a function takes \`&AdminCap\` (owned), only 
 - Generics are monomorphized at compile time. Types must satisfy ability constraints.
 - \`public(package)\` restricts callers to the same package — but within a package, all modules can call each other.
 - Division truncates toward zero. Precision loss in integer division is real and exploitable (especially in share/rate calculations).
+- **Implementation-level math bugs are the #1 exploited class on Sui.** The Cetus exploit ($230M) was a single off-by-one in a shift boundary check: \`> 191\` instead of \`>= 192\`, allowing u256 overflow at exactly bit-width 192. After design-level analysis, systematically examine every arithmetic/math function:
+  - Off-by-one in boundary checks: \`>\` vs \`>=\`, \`<\` vs \`<=\` — test at N-1, N, N+1 for every comparison threshold
+  - Overflow at type-width boundaries: test with values near 2^64, 2^128, 2^192, 2^255
+  - Truncation on downcasts: u256→u128, u128→u64 — compute whether intermediate results can exceed target type max
+  - Multiply-before-divide overflow: \`a * b / c\` where the intermediate \`a * b\` exceeds type max before \`/ c\` normalizes (see DEFI-85 in \`defi-math-precision\`)
+  - For suspicious math functions, use the Sui Prover to formally verify ALL possible inputs (see Sui Prover section below)
 
 ### DeFi Security Primitives
 - **Oracle manipulation**: spot price derived from pool ratio is flash-loan manipulable. Require TWAP/EMA with staleness checks + confidence intervals.
@@ -97,7 +103,8 @@ You have access to a library of detailed vulnerability pattern references via tw
 - Load \`sui-protocol-checklists\` if you can identify the protocol type (lending, AMM, vault, staking, bridge, governance, NFT, upgrade)
 - Load \`sui-patterns\` or \`common-move\` for detailed pattern matching with code examples
 
-**Do NOT** load all references upfront. Be selective based on what the module actually does. Each reference shows its approximate token size — budget accordingly.`;
+**Do NOT** load all references upfront. Be selective based on what the module actually does. Each reference shows its approximate token size — budget accordingly.
+- If you find suspicious math or want to formally verify any property, load \`sui-prover-specs\` for formal verification spec templates and workflow`;
 
 // ── Shared sections ──────────────────────────────────────────────
 
@@ -289,6 +296,54 @@ Signals:
 Returns: EXPLOIT_CONFIRMED or NO_EXPLOIT`;
 }
 
+const SUI_PROVER_SECTION = `## Sui Prover (formal verification tool)
+
+You have access to the Sui Prover for mathematically proving properties of Move functions for ALL possible inputs. If it finds a counterexample, that's a concrete bug with specific input values.
+
+### When to use
+- Math functions with boundary checks (shifts, casts, comparisons) — verify no off-by-one
+- Share/rate calculations — verify rounding direction and monotonicity
+- Any function where you suspect a bug but can't construct a concrete counterexample
+- State invariants, accumulator updates, access control properties
+
+### Workflow
+1. Copy the target package: \`cp -r target/ spec-package/\`
+2. Check \`spec-package/Move.toml\` — remove any direct Sui/MoveStdlib dependencies (prover requires implicit deps)
+3. Write spec file(s) into \`spec-package/sources/\` using \`write_file\`
+4. Run: \`cd spec-package && sui-prover\`
+5. If counterexample found → concrete bug → confirm with dry-run using those exact input values → write to findings.json
+6. If timeout → narrow the \`requires\` conditions or simplify the postcondition
+
+### Spec structure
+\`\`\`move
+#[spec_only]
+use prover::prover::{requires, ensures, old};
+
+#[spec(prove)]
+fun function_name_spec(/* same args */): /* same return */ {
+    requires(precondition);           // assumed to hold
+    let old_state = old!(mutable_ref); // capture pre-state
+    let result = function_name(args);  // call function under test
+    ensures(postcondition);           // must hold
+    result
+}
+\`\`\`
+
+### Key syntax
+- \`.to_int()\` — convert to unbounded integer (no overflow in spec math)
+- \`.to_real()\` — convert to arbitrary-precision real (check rounding)
+- \`old!(ref)\` — capture pre-state of mutable references
+- \`#[spec_only]\` — code visible only to prover
+- Ghost variables: \`use prover::ghost::{declare_global, global};\` for tracking events
+
+### Common spec patterns
+- **Overflow safety**: \`ensures(result.to_int() >= 0u64.to_int())\`
+- **Share price monotonicity**: \`ensures(new_shares.mul(old_balance).lte(old_shares.mul(new_balance)))\`
+- **Rounding favors protocol**: compare \`result.to_real()\` against exact arithmetic
+- **Boundary check**: \`requires(shift == 192); requires(n > 0); ensures(false);\` — proves function aborts at boundary
+
+Load \`sui-prover-specs\` reference for full syntax, spec templates, and common pitfalls.`;
+
 function buildOutputFormat(moduleName: string): string {
   return `## Output files
 
@@ -370,6 +425,8 @@ ${REFERENCE_TOOLS_SECTION}
 ${buildSdkReference(input.network, input.rpcUrl, input.packageId, input.attackerAddress)}
 
 ${buildOracleSection(input.rpcUrl, input.attackerAddress)}
+
+${SUI_PROVER_SECTION}
 
 ${buildOutputFormat(input.moduleName)}`;
 }

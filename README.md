@@ -52,6 +52,8 @@ Each hunter agent gets:
 - Cross-module function signatures for understanding interactions
 - Access to mainnet RPC for reading on-chain state and dry-running exploit transactions
 - A bash tool for running TypeScript exploit scripts
+- A curated reference library of vulnerability patterns, DeFi deep-dives, and formal verification guides
+- Access to the [Sui Prover](https://github.com/asymptotic-code/sui-prover) for formally verifying properties of Move functions (if installed)
 
 ## Two modes: mainnet analysis and devnet pentesting
 
@@ -106,6 +108,7 @@ Options:
 The pipeline targets vulnerabilities exploitable by unprivileged users:
 
 - Fund theft or value extraction (share inflation, oracle manipulation, rounding exploits)
+- Implementation-level math bugs (off-by-one boundary checks, overflow at type-width boundaries, cast truncation)
 - Permanent fund locking (irrecoverable pool/position states)
 - State corruption (broken accounting affecting future operations)
 - Invariant violations (unbacked shares, undercollateralized positions)
@@ -121,6 +124,7 @@ It explicitly does **not** report admin misconfiguration, governance centralizat
 - Docker (for devnet mode)
 - `ANTHROPIC_API_KEY` environment variable
 - pnpm
+- [Sui Prover](https://github.com/asymptotic-code/sui-prover) (optional — `brew install asymptotic-code/sui-prover/sui-prover`)
 
 ## Project structure
 

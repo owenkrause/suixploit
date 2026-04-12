@@ -201,6 +201,15 @@ export const REFERENCE_CATALOG: ReferenceEntry[] = [
     tokens: 1440,
   },
 
+  // ── Formal verification ────────────────────────────────────────
+  {
+    name: "sui-prover-specs",
+    description:
+      "Sui Prover formal verification: full syntax (#[spec(prove)], requires/ensures, .to_int()/.to_real(), ghost variables, loop invariants), setup workflow (copy package, fix Move.toml, write specs, run sui-prover), spec templates for overflow/rounding/monotonicity/boundaries/state invariants/events, interpreting output (counterexamples = confirmed bugs), common pitfalls",
+    file: "sui-prover-specs.md",
+    tokens: 3100,
+  },
+
   // ── Specialized ───────────────────────────────────────────────
   {
     name: "semantic-gap-checks",
