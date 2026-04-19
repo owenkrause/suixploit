@@ -4,9 +4,9 @@ import { mkdirSync, writeFileSync, readFileSync, symlinkSync, lstatSync, renameS
 import type { ModuleInfo, Finding, ValidatedFinding, ScanResult, ScanMeta } from "../types.js";
 import { buildScanPaths, generateRunId, hunterWorkspace, hunterScratch, type ScanPaths } from "./paths.js";
 import { resolveModules, buildPipelineContext, shouldSkipRanker, buildScanResult } from "../pipeline.js";
-import { buildRankerPrompt, parseRankerResponse, filterHighPriority, extractSignatures } from "../ranker/index.js";
+import { buildRankerPrompt, parseRankerResponse, filterHighPriority } from "../ranker/index.js";
 import { runValidators, filterConfirmed, deduplicateFindings } from "../validator/index.js";
-import { buildHunterPrompt } from "../hunter/index.js";
+import { buildHunterPromptParts } from "../hunter/index.js";
 import { buildImage, startContainer, waitForReady, readContextJson, readFindings, readContainerFile, copyFromContainer } from "./docker.js";
 import { buildSystemPrompt, buildMainnetSystemPrompt, runAgent } from "./agent.js";
 import { makeDockerExec, makeLocalExec } from "./exec.js";
@@ -140,13 +140,21 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
   const allFindings: Finding[] = [];
   const display = new StatusDisplay();
 
-  // Build cross-module context for each hunter (signatures of sibling modules)
-  function buildRelatedSignatures(targetMod: ModuleInfo): string {
+  // Compact project map: one line per sibling module with its path. The agent
+  // greps into ./target/<path> for details rather than pre-loading signatures
+  // (the old approach routinely added 20k+ tokens of body it mostly didn't use).
+  const targetAbs = resolve(target);
+  function buildProjectMap(targetMod: ModuleInfo): string {
     const others = modules.filter((m) => m.name !== targetMod.name);
     if (others.length === 0) return "";
     return others
-      .map((m) => `### ${m.name}\n\`\`\`move\n${extractSignatures(m.source)}\n\`\`\``)
-      .join("\n\n");
+      .map((m) => {
+        const rel = m.path.startsWith(targetAbs + "/")
+          ? m.path.slice(targetAbs.length + 1)
+          : m.path;
+        return `- \`${m.name}\` → \`target/${rel}\``;
+      })
+      .join("\n");
   }
 
   try {
@@ -160,8 +168,8 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
         ctx.hunterTargets.map(async (mod) => {
           const release = await sem.acquire();
           try {
-            const relatedSigs = buildRelatedSignatures(mod);
-            const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId, display, relatedSigs, effort);
+            const projectMap = buildProjectMap(mod);
+            const findings = await runMainnetHunter(client, mod, workDir, paths, model, maxTurns, packageId, display, projectMap, effort);
             if (findings.length > 0) {
               allFindings.push(...findings);
             }
@@ -181,8 +189,8 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
         ctx.hunterTargets.map(async (mod) => {
           const release = await sem.acquire();
           try {
-            const relatedSigs = buildRelatedSignatures(mod);
-            const findings = await runDevnetHunter(client, tracker, mod, target, paths, model, maxTurns, display, relatedSigs, effort);
+            const projectMap = buildProjectMap(mod);
+            const findings = await runDevnetHunter(client, tracker, mod, target, paths, model, maxTurns, display, projectMap, effort);
             if (findings.length > 0) {
               allFindings.push(...findings);
             }
@@ -263,21 +271,21 @@ async function runMainnetHunter(
   maxTurns: number | undefined,
   packageId: string,
   display: StatusDisplay,
-  relatedModuleSignatures: string,
+  projectMap: string,
   effort?: EffortLevel
 ): Promise<Finding[]> {
   const rpcUrl = DEFAULT_MAINNET_RPC;
-  const hunterPrompt = buildHunterPrompt({
+  const hunterParts = buildHunterPromptParts({
     moduleName: mod.name,
     moduleSource: mod.source,
     protocolDescription: mod.protocolDescription ?? "No description provided.",
     invariants: mod.invariants ?? [],
     packageId,
     rpcUrl,
-    relatedModuleSignatures,
+    projectMap,
     network: "mainnet",
   });
-  const systemPrompt = buildMainnetSystemPrompt(hunterPrompt, { rpcUrl, packageId });
+  const systemPrompt = buildMainnetSystemPrompt(hunterParts, { rpcUrl, packageId });
 
   // Create isolated workspace with scratch dir for agent scripts
   const workspace = hunterWorkspace(paths, mod.name);
@@ -319,7 +327,7 @@ async function runDevnetHunter(
   model: string,
   maxTurns: number | undefined,
   display: StatusDisplay,
-  relatedModuleSignatures: string,
+  projectMap: string,
   effort?: EffortLevel
 ): Promise<Finding[]> {
   logDetail(`[${mod.name}] starting container`);
@@ -339,7 +347,7 @@ async function runDevnetHunter(
   const rpcPort = parsePort(context.rpcUrl, 9000);
   const faucetPort = parsePort(context.faucetUrl, 9123);
 
-  const hunterPrompt = buildHunterPrompt({
+  const hunterParts = buildHunterPromptParts({
     moduleName: mod.name,
     moduleSource: mod.source,
     protocolDescription: mod.protocolDescription ?? "No description provided.",
@@ -349,10 +357,10 @@ async function runDevnetHunter(
     attackerAddress: context.attackerAddress,
     adminAddress: context.adminAddress,
     userAddress: context.userAddress,
-    relatedModuleSignatures,
+    projectMap,
     network: "devnet",
   });
-  const systemPrompt = buildSystemPrompt(hunterPrompt, context);
+  const systemPrompt = buildSystemPrompt(hunterParts, context);
 
   // Create local workspace for parity with mainnet output structure
   const workspace = hunterWorkspace(paths, mod.name);

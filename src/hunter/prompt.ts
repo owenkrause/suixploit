@@ -5,12 +5,22 @@ export interface HunterPromptInput {
   invariants: string[];
   packageId: string;
   rpcUrl: string;
+  /** Compact "- module_name" list of sibling modules. Agent greps into target/ for details. */
+  projectMap?: string;
+  /** @deprecated — signatures dump. Use projectMap instead. */
   relatedModuleSignatures?: string;
   network: "devnet" | "mainnet";
   // Devnet-only
   attackerAddress?: string;
   adminAddress?: string;
   userAddress?: string;
+}
+
+export interface HunterPromptParts {
+  /** Byte-identical across hunters in a mainnet scan (and across turns within one hunter). Safe to cache. */
+  stable: string;
+  /** Target-specific: module name, source, project map, output schema. Cache within hunter only. */
+  dynamic: string;
 }
 
 // ── Sui/Move/DeFi foundational context ─────────────────────────
@@ -88,6 +98,18 @@ The primary access gate on Sui. If a function takes \`&AdminCap\` (owned), only 
 - Hot potato is compiler-enforced — no runtime bypass is possible.
 - "Pattern looks dangerous" is not analysis. Trace the actual data flow and write the exact PTB exploit sequence. If you can't write the exploit, it probably doesn't exist.`;
 
+// ── Exploration guidance ───────────────────────────────────────
+
+const EXPLORATION_GUIDANCE = `## Efficient code exploration
+
+Your target module is inlined below — do NOT re-read it via \`cat\`/\`sed\`. For anything outside it:
+
+- Locate first: \`rg -n 'pattern' target/\` (use \`-l\` for file-only, \`| head -20\` to cap). Grep is always cheaper than loading a file.
+- Read ranges: \`sed -n 'L1,L2p' path/to/file.move\` with tight ranges (±30 lines around the match).
+- NEVER \`cat\` a full \`.move\` file. They routinely exceed 1,000 lines, and every byte of tool output stays in your context for the remainder of the run — past a few cats you're paying for it on every subsequent turn.
+- The "Package modules" map (in Target section) tells you which modules exist. Don't \`ls\`-walk the tree to discover them.
+- If you need a function's signature from another module, \`rg -n 'public fun <name>' target/ -A 5\` gives you the signature + a few lines of body in one call.`;
+
 // ── Reference tools section ─────────────────────────────────────
 
 const REFERENCE_TOOLS_SECTION = `## Reference Library
@@ -112,7 +134,6 @@ function buildSdkReference(
   network: "devnet" | "mainnet",
   rpcUrl: string,
   packageId: string,
-  attackerAddress?: string
 ): string {
   const clientSetup = `### Client setup
 \`\`\`typescript
@@ -216,7 +237,6 @@ Save exploit scripts as .mts files and run with \`npx tsx <file>\`.`;
   }
 
   // devnet
-  const attacker = attackerAddress ?? "0x<attacker_address>";
   return `## Sui SDK reference (@mysten/sui v2)
 
 IMPORTANT: Use \`SuiJsonRpcClient\` — NOT \`SuiClient\` (does not exist in v2).
@@ -270,14 +290,12 @@ const result = await client.core.simulateTransaction({
 ${readingState}
 
 ### Deploying and calling contracts
-The target contract is already deployed. Attacker address: ${attacker}
-Use the attacker keypair to sign exploit transactions.
+The target contract is already deployed. Use the attacker keypair (address in the Environment section below) to sign exploit transactions.
 
 Save exploit scripts as .mts files and run with \`npx tsx <file>\`.`;
 }
 
-function buildOracleSection(rpcUrl: string, attackerAddress?: string): string {
-  const attacker = attackerAddress ?? "0x<attacker_address>";
+function buildOracleSection(rpcUrl: string): string {
   return `## Oracle (exploit verification tool)
 Write a TS file that exports:
 - \`buildTx(client, attackerAddress: string)\` — returns a Transaction
@@ -285,7 +303,7 @@ Write a TS file that exports:
 
 Then run:
 \`\`\`bash
-npx tsx src/oracle/check.ts --signal <abort|balance|ownership> --tx <path-to-your-exploit.ts> --attacker ${attacker} --rpc-url ${rpcUrl}
+npx tsx src/oracle/check.ts --signal <abort|balance|ownership> --tx <path-to-your-exploit.ts> --attacker <attacker-address> --rpc-url ${rpcUrl}
 \`\`\`
 
 Signals:
@@ -378,14 +396,7 @@ Leave EMPTY unless you have a confirmed exploit.
 
 // ── Main builder ─────────────────────────────────────────────────
 
-export function buildHunterPrompt(input: HunterPromptInput): string {
-  const invariantList = input.invariants.map((inv) => `- ${inv}`).join("\n");
-
-  const relatedSection = input.relatedModuleSignatures
-    ? `\n## Related modules (signatures only)\n\n${input.relatedModuleSignatures}\n`
-    : "";
-
-  return `You are a smart contract security researcher. Find vulnerabilities in this Sui Move module that an unprivileged attacker can exploit for economic gain or to cause permanent, unmitigable damage to other users.
+const METHODOLOGY = `You are a smart contract security researcher. Find vulnerabilities in this Sui Move module that an unprivileged attacker can exploit for economic gain or to cause permanent, unmitigable damage to other users.
 
 ## Methodology — Two-Phase Hunting
 
@@ -402,9 +413,41 @@ After forming your initial hypotheses, use the reference tools to find additiona
 1. Load relevant pattern files and check if known attack patterns apply to what you're seeing
 2. For DeFi modules, load \`defi-vectors\` first, then the appropriate deep-dive file(s)
 
-Do NOT skip Phase 1. Reference patterns supplement your analysis, not replace it.
+Do NOT skip Phase 1. Reference patterns supplement your analysis, not replace it.`;
 
-## Target
+/**
+ * Returns the system prompt split into two parts:
+ *   - `stable` — content that does NOT depend on the hunter's target module.
+ *     Byte-identical across all mainnet hunters in one scan (and across all
+ *     turns within any hunter). Use a cache_control breakpoint on this block.
+ *   - `dynamic` — target-specific (module name, source, project map, output schema).
+ *     Still worth caching across turns within a single hunter.
+ */
+export function buildHunterPromptParts(input: HunterPromptInput): HunterPromptParts {
+  const invariantList = input.invariants.map((inv) => `- ${inv}`).join("\n");
+
+  // Prefer the compact project map; fall back to the legacy signatures dump.
+  const mapSection = input.projectMap
+    ? `\n## Package modules (grep into \`target/\` for details)\n\n${input.projectMap}\n`
+    : input.relatedModuleSignatures
+      ? `\n## Related modules (signatures only)\n\n${input.relatedModuleSignatures}\n`
+      : "";
+
+  const stable = `${METHODOLOGY}
+
+${FOUNDATIONAL_CONTEXT}
+
+${EXPLORATION_GUIDANCE}
+
+${REFERENCE_TOOLS_SECTION}
+
+${buildSdkReference(input.network, input.rpcUrl, input.packageId)}
+
+${buildOracleSection(input.rpcUrl)}
+
+${SUI_PROVER_SECTION}`;
+
+  const dynamic = `## Target
 Module: ${input.moduleName}
 Package ID: ${input.packageId}${input.network === "mainnet" ? `\nRPC: ${input.rpcUrl}` : ""}
 Network: ${input.network}
@@ -417,16 +460,14 @@ ${invariantList || "- None specified"}
 \`\`\`move
 ${input.moduleSource}
 \`\`\`
-${relatedSection}
-${FOUNDATIONAL_CONTEXT}
-
-${REFERENCE_TOOLS_SECTION}
-
-${buildSdkReference(input.network, input.rpcUrl, input.packageId, input.attackerAddress)}
-
-${buildOracleSection(input.rpcUrl, input.attackerAddress)}
-
-${SUI_PROVER_SECTION}
-
+${mapSection}
 ${buildOutputFormat(input.moduleName)}`;
+
+  return { stable, dynamic };
+}
+
+/** Backwards-compatible single-string form. Prefer {@link buildHunterPromptParts} for caching. */
+export function buildHunterPrompt(input: HunterPromptInput): string {
+  const { stable, dynamic } = buildHunterPromptParts(input);
+  return `${stable}\n\n${dynamic}`;
 }

@@ -1,1 +1,6 @@
-export { buildHunterPrompt, type HunterPromptInput } from "./prompt.js";
+export {
+  buildHunterPrompt,
+  buildHunterPromptParts,
+  type HunterPromptInput,
+  type HunterPromptParts,
+} from "./prompt.js";

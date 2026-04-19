@@ -98,17 +98,22 @@ describe("buildReferenceTools", () => {
 });
 
 describe("buildSystemPrompt", () => {
-  it("includes hunter prompt and context", () => {
-    const prompt = buildSystemPrompt("Find vulns in vault", {
-      rpcUrl: "http://127.0.0.1:9000",
-      packageId: "0xabc",
-      attackerAddress: "0x123",
-      adminAddress: "0x456",
-      userAddress: "0x789",
-    });
-    expect(prompt).toContain("Find vulns in vault");
-    expect(prompt).toContain("0xabc");
-    expect(prompt).toContain("0x123");
+  it("includes hunter parts and context", () => {
+    const prompt = buildSystemPrompt(
+      { stable: "stable-body", dynamic: "Find vulns in vault" },
+      {
+        rpcUrl: "http://127.0.0.1:9000",
+        packageId: "0xabc",
+        attackerAddress: "0x123",
+        adminAddress: "0x456",
+        userAddress: "0x789",
+      },
+    );
+    // Devnet puts the per-hunter env section in `dynamic`.
+    expect(prompt.stable).toBe("stable-body");
+    expect(prompt.dynamic).toContain("Find vulns in vault");
+    expect(prompt.dynamic).toContain("0xabc");
+    expect(prompt.dynamic).toContain("0x123");
   });
 });
 
@@ -208,22 +213,24 @@ describe("makeLocalExec", () => {
 });
 
 describe("buildMainnetSystemPrompt", () => {
-  it("contains the hunter prompt and context values", () => {
-    const prompt = buildMainnetSystemPrompt("Analyze this contract", {
-      rpcUrl: "https://fullnode.mainnet.sui.io:443",
-      packageId: "0xdeadbeef",
-    });
-    expect(prompt).toContain("Analyze this contract");
-    expect(prompt).toContain("0xdeadbeef");
-    expect(prompt).toContain("https://fullnode.mainnet.sui.io:443");
+  it("contains the hunter parts and context values", () => {
+    const prompt = buildMainnetSystemPrompt(
+      { stable: "Analyze this contract", dynamic: "target-body" },
+      { rpcUrl: "https://fullnode.mainnet.sui.io:443", packageId: "0xdeadbeef" },
+    );
+    // Mainnet env values are stable within a scan, so they live in `stable`.
+    expect(prompt.stable).toContain("Analyze this contract");
+    expect(prompt.stable).toContain("0xdeadbeef");
+    expect(prompt.stable).toContain("https://fullnode.mainnet.sui.io:443");
+    expect(prompt.dynamic).toBe("target-body");
   });
 
   it("contains dry-run and mainnet references", () => {
-    const prompt = buildMainnetSystemPrompt("Hunt bugs", {
-      rpcUrl: "https://fullnode.mainnet.sui.io:443",
-      packageId: "0x123",
-    });
-    expect(prompt).toContain("dry-run");
-    expect(prompt).toContain("mainnet");
+    const prompt = buildMainnetSystemPrompt(
+      { stable: "Hunt bugs", dynamic: "" },
+      { rpcUrl: "https://fullnode.mainnet.sui.io:443", packageId: "0x123" },
+    );
+    expect(prompt.stable).toContain("dry-run");
+    expect(prompt.stable).toContain("mainnet");
   });
 });

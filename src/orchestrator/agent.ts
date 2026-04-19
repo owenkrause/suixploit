@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { type StatusDisplay, c } from "./display.js";
 import { listReferences, readReference } from "../references.js";
+import type { HunterPromptParts } from "../hunter/index.js";
 import type { EffortLevel } from "./index.js";
 
 const MAX_RETRIES = 5;
@@ -16,9 +17,20 @@ const EFFORT_PRESETS: Record<EffortLevel, { effort: EffortLevel; maxTokens: numb
 
 export type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
+/**
+ * System prompt: either a plain string (single cached block) or split into
+ * {@link HunterPromptParts}-shaped `stable` + `dynamic` chunks.
+ *
+ * With the split form, `stable` becomes a cache breakpoint reusable across
+ * hunters in a mainnet scan; `dynamic` becomes a second breakpoint reusable
+ * across turns within one hunter. See `shared/prompt-caching.md` in the
+ * `claude-api` skill for the underlying prefix-match invariant.
+ */
+export type SystemPromptInput = string | HunterPromptParts;
+
 export interface AgentOptions {
   exec: ExecFn;
-  systemPrompt: string;
+  systemPrompt: SystemPromptInput;
   model: string;
   maxTurns?: number;
   moduleName: string;
@@ -107,13 +119,13 @@ export function buildReferenceTools(): Anthropic.Tool[] {
   ];
 }
 
+// Devnet: Environment section has per-hunter addresses (attacker/admin/user) —
+// belongs in `dynamic` so devnet stable content stays cacheable across turns.
 export function buildSystemPrompt(
-  hunterPrompt: string,
-  context: Record<string, string>
-): string {
-  return `${hunterPrompt}
-
-## Environment (pre-configured — do NOT modify)
+  hunterParts: HunterPromptParts,
+  context: Record<string, string>,
+): HunterPromptParts {
+  const envSection = `## Environment (pre-configured — do NOT modify)
 
 The Sui devnet is already running. The contract is already deployed. Accounts are funded. Use these values directly:
 
@@ -128,15 +140,20 @@ You have a \`bash\` tool to run shell commands and a \`write_file\` tool to writ
 Write your exploit scripts in the current directory.
 
 When you are done, write your findings to findings.json in the current directory.`;
+
+  return {
+    stable: hunterParts.stable,
+    dynamic: `${hunterParts.dynamic}\n\n${envSection}`,
+  };
 }
 
+// Mainnet: Environment section (rpcUrl, packageId) is stable across all hunters
+// in a scan — safe to include in `stable` for cross-hunter cache reuse.
 export function buildMainnetSystemPrompt(
-  hunterPrompt: string,
-  context: Record<string, string>
-): string {
-  return `${hunterPrompt}
-
-## Environment (mainnet dry-run — read-only, nothing executes on-chain)
+  hunterParts: HunterPromptParts,
+  context: Record<string, string>,
+): HunterPromptParts {
+  const envSection = `## Environment (mainnet dry-run — read-only, nothing executes on-chain)
 
 You are analyzing a live contract on Sui mainnet. All transactions are simulated via dry-run.
 
@@ -149,6 +166,11 @@ IMPORTANT: Use \`SuiJsonRpcClient\` from \`@mysten/sui/jsonRpc\` — NOT \`SuiCl
 Write your exploit scripts in the current directory.
 
 When you are done, write your findings to findings.json in the current directory.`;
+
+  return {
+    stable: `${hunterParts.stable}\n\n${envSection}`,
+    dynamic: hunterParts.dynamic,
+  };
 }
 
 function formatTokens(n: number): string {
@@ -168,6 +190,52 @@ function summarizeThinking(content: Anthropic.ContentBlock[]): string {
   return "";
 }
 
+// Build the `system` array with cache_control breakpoints. String input gets
+// one breakpoint; split input gets two — stable first (cross-hunter reusable
+// on mainnet), dynamic second (cross-turn within one hunter).
+function buildSystemBlocks(input: SystemPromptInput): Anthropic.TextBlockParam[] {
+  const ephemeral = { type: "ephemeral" as const };
+  if (typeof input === "string") {
+    return [{ type: "text", text: input, cache_control: ephemeral }];
+  }
+  return [
+    { type: "text", text: input.stable, cache_control: ephemeral },
+    { type: "text", text: input.dynamic, cache_control: ephemeral },
+  ];
+}
+
+// Rolling cache_control on the last content block of the most recent message.
+// Keeps the conversation-history prefix cached turn-over-turn without mutating
+// the stored messages. Returns a shallow-cloned array safe to pass to the API.
+function withRollingCacheBreakpoint(
+  messages: Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  if (messages.length === 0) return messages;
+  const result = messages.slice();
+  const lastIdx = result.length - 1;
+  const last = result[lastIdx];
+  const cache = { cache_control: { type: "ephemeral" as const } };
+
+  if (typeof last.content === "string") {
+    result[lastIdx] = {
+      ...last,
+      content: [{ type: "text", text: last.content, ...cache }],
+    };
+    return result;
+  }
+
+  const blocks = last.content.slice();
+  const lastBlockIdx = blocks.length - 1;
+  if (lastBlockIdx < 0) return messages;
+  blocks[lastBlockIdx] = { ...blocks[lastBlockIdx], ...cache };
+  result[lastIdx] = { ...last, content: blocks };
+  return result;
+}
+
+function stringifySystemPrompt(input: SystemPromptInput): string {
+  return typeof input === "string" ? input : `${input.stable}\n\n${input.dynamic}`;
+}
+
 export async function runAgent(
   client: Anthropic,
   options: AgentOptions
@@ -175,11 +243,12 @@ export async function runAgent(
   const { exec, systemPrompt, model, maxTurns, moduleName, logFile, display, effort = "medium" } = options;
   const { effort: effortLevel, maxTokens, toolOutputLimit } = EFFORT_PRESETS[effort];
   const tools = [buildToolDefinition(), buildWriteFileTool(), ...buildReferenceTools()];
+  const systemBlocks = buildSystemBlocks(systemPrompt);
 
   // Initialize log file with system prompt
   if (logFile) {
     writeFileSync(logFile, `# Agent Log: ${moduleName}\n# Model: ${model}\n# Started: ${new Date().toISOString()}\n\n`);
-    appendFileSync(logFile, `## System Prompt\n${systemPrompt}\n\n---\n\n`);
+    appendFileSync(logFile, `## System Prompt\n${stringifySystemPrompt(systemPrompt)}\n\n---\n\n`);
   }
 
   function log(entry: string) {
@@ -231,9 +300,9 @@ export async function runAgent(
           max_tokens: maxTokens,
           thinking: { type: "adaptive" as const },
           output_config: { effort: effortLevel },
-          system: systemPrompt,
+          system: systemBlocks,
           tools,
-          messages,
+          messages: withRollingCacheBreakpoint(messages),
         });
         break;
       } catch (err) {
@@ -263,9 +332,16 @@ export async function runAgent(
     // @ts-expect-error — response is assigned in the loop or we returned
     if (!response) throw lastErr;
 
-    totalInputTokens += response.usage.input_tokens;
-    totalOutputTokens += response.usage.output_tokens;
+    // Count cached reads at ~10% weight (input cost), cache creation at full
+    // input cost — so `totalInputTokens` approximates billable cost rather than
+    // raw prefix size. Raw usage is logged below for verification.
+    const usage = response.usage;
+    const cacheRead = usage.cache_read_input_tokens ?? 0;
+    const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+    totalInputTokens += usage.input_tokens + cacheWrite + Math.ceil(cacheRead * 0.1);
+    totalOutputTokens += usage.output_tokens;
     const totalTokens = totalInputTokens + totalOutputTokens;
+    log(`\n## Turn ${turns} usage: input=${usage.input_tokens} cache_read=${cacheRead} cache_write=${cacheWrite} output=${usage.output_tokens}\n`);
 
     // Add assistant response to conversation
     messages.push({ role: "assistant", content: response.content });

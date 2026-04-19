@@ -18,9 +18,11 @@ describe("buildHunterPrompt", () => {
     expect(prompt).toContain("test::vault");
     expect(prompt).toContain("module test::vault { }");
     expect(prompt).toContain("only admin can withdraw");
-    expect(prompt).toContain("0xattacker");
     expect(prompt).toContain("http://127.0.0.1:9100");
     expect(prompt).toContain("0xpkg");
+    // Attacker/admin/user addresses are now appended by buildSystemPrompt's
+    // Environment section, not baked into the hunter prompt itself. This keeps
+    // the hunter prompt cacheable across devnet hunters where addresses differ.
   });
 
   it("formats multiple invariants as a list", () => {
@@ -207,8 +209,8 @@ describe("buildHunterPrompt", () => {
       network: "devnet",
     });
     expect(prompt).toContain("devnet");
-    expect(prompt).toContain("0xattacker");
     expect(prompt).toContain("signAndExecuteTransaction");
+    // Addresses are injected by buildSystemPrompt, not buildHunterPrompt.
   });
 
   // ── Mainnet-specific ─────────────────────────────────────────
