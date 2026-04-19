@@ -73,6 +73,7 @@ program
     // Clamp effort to model's max output tokens
     // Presets: low=16k, medium=32k, high=64k, max=128k
     const MODEL_MAX_TOKENS: Record<string, number> = {
+      "opus-4-7": 128_000,
       "opus-4-6": 128_000,
       "sonnet-4-6": 64_000,
       "haiku-4-5": 64_000,
